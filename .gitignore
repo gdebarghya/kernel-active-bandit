@@ -1,0 +1,22 @@
+Good catch — those two got lost in the detour. Let's create them now, same method as before.
+.gitignore — controls what git tracks (keeps data/results/cruft out of version control):
+bashcat > .gitignore << 'EOF'
+# data & results (regenerable / third-party)
+data/
+results/
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# conda / venv
+.conda/
+env/
+venv/
+
+# os cruft
+.DS_Store
+EOF

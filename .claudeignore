@@ -1,0 +1,6 @@
+cat > .claudeignore << 'EOF'
+data/
+results/
+*.parquet
+*.ipynb_checkpoints/
+EOF
