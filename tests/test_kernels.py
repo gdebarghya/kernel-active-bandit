@@ -45,6 +45,27 @@ def test_rbf_kernel_1d_2d_equivalence():
     np.testing.assert_allclose(K_1d, K_2d)
 
 
+@pytest.mark.parametrize("c", [0.5, 2.0, 10.0])
+def test_rbf_kernel_scale_invariant(c):
+    # k(x,y) = exp(-||x-y||^2 / (2*bandwidth**2)) depends only on ||x-y||/bandwidth,
+    # so jointly rescaling the data and the bandwidth by c must leave K unchanged.
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(7, 3))
+    bandwidth = 1.4
+    K = rbf_kernel(X, bandwidth=bandwidth)
+    K_scaled = rbf_kernel(c * X, bandwidth=c * bandwidth)
+    np.testing.assert_allclose(K_scaled, K)
+
+
+def test_rbf_kernel_larger_bandwidth_increases_offdiag_values():
+    rng = np.random.default_rng(6)
+    X = rng.normal(size=(6, 2))
+    K_small = rbf_kernel(X, bandwidth=0.5)
+    K_large = rbf_kernel(X, bandwidth=5.0)
+    off_diag = ~np.eye(X.shape[0], dtype=bool)
+    assert np.all(K_large[off_diag] >= K_small[off_diag])
+
+
 @pytest.mark.parametrize("bandwidth", [0.0, -1.0])
 def test_rbf_kernel_rejects_nonpositive_bandwidth(bandwidth):
     X = np.array([[0.0], [1.0]])
