@@ -14,7 +14,7 @@ Language: Python. One Jupyter notebook per experiment; shared logic in `src/`.
 | `kabc-sg` | KABC, kernel-uniform sub-Gaussian threshold (Tolstikhin style) | our paper, Discussion | ablation |
 | `kabc-oracle` | Non-adaptive CLUSTER(n*, δ) with oracle n* | our paper | measures price of adaptivity (doubling trick) |
 | `acb` | ACB (SRI + ADC), mean-based | Thuot et al. 2024 (arXiv 2406.11485) | re-implement; shared codebase style |
-| `tas-fw` | Track-and-Stop + Frank-Wolfe, finite alphabet | Yavas et al. (arXiv 2409.05072) | small instances only (N ≤ 20) |
+| `tas-fw` | Track-and-Stop + Frank-Wolfe, finite alphabet | Yavas et al. (arXiv 2409.05072) | small instances only (N ≤ 20); Exp-3's reduced instance ONLY, not Exp-1 — see note there |
 | `unif-kkm` | Uniform sampling (n per arm) + kernel k-means | folklore baseline | sweep n; non-adaptive, fixed-budget |
 
 Design rule: every algorithm implements a common interface
@@ -82,9 +82,16 @@ so pairwise separation is exactly Delta (equidistant means).
 - Sweep Delta in {1, 1.5, 2, 3, 4, 6} (main plot).
 - Sweep d in {6, 10, 50, 100} at Delta = 3. (d=2 excluded: GaussianMixtureEnv's mean construction requires d ≥ 2K = 6 for K=3, to place K orthogonal mean-pairs.)
 - Sweep N in {30, 60, 120} at Delta = 3.
-- TaS-FW subset: N = 15, K = 3, d = 2, Delta in {2, 3, 4} only.
 
-**Algorithms:** kabc, kabc-sg, acb, unif-kkm (n in log-grid), tas-fw (subset).
+**Algorithms:** kabc, kabc-sg, acb, unif-kkm (n in log-grid). No tas-fw here:
+its finite-alphabet assumption doesn't hold for these continuous Gaussian
+instances, and the originally-planned N=15, K=3, d=2 subset is moot anyway
+since GaussianMixtureEnv's mean construction requires d ≥ 2K = 6 for K=3 (see
+the d-sweep note above). Running tas-fw here would require an off-label
+discretization approximation outside the algorithm's proven guarantees;
+tas-fw is instead run only on Experiment 3's reduced instance, where the
+finite-alphabet assumption holds natively (MovieLens ratings on {1..5}) — see
+Experiment 3 below.
 
 **Figures:**
 1. (Headline) log tau vs log Delta, all methods; dashed overlay of the theoretical
@@ -175,4 +182,30 @@ the tiny instance but orders of magnitude more compute per decision.
 
 Workflow: `make data` → `make calibrate` → `make smoke` (all three experiments,
 SMOKE_TEST mode, < 10 min laptop) → `make exp1 exp2 exp3` → notebooks for figures.
-```
+​```
+kernel-active-bandit/
+├── configs/                  # yaml per experiment + calibration.yaml
+├── data/                     # gitignored; download script fills it
+├── docs/
+│   └── experiments.md        # this file
+├── notebooks/
+│   ├── 01_gaussian_mixtures.ipynb
+│   ├── 02_same_mean_shapes.ipynb
+│   └── 03_movielens.ipynb
+├── results/                  # gitignored parquet outputs
+├── scripts/
+│   ├── download_movielens.py
+│   ├── calibrate_constants.py
+│   └── run_experiment.py     # CLI: python -m scripts.run_experiment configs/exp1.yaml
+├── src/kabc/
+│   ├── algorithms/           # kabc.py, acb.py, tas_fw.py, baselines.py
+│   ├── environments.py       # GMM, same-mean families, MovieLens env
+│   ├── kernels.py            # RBF, median heuristic, MMD estimators (incl. variance est.)
+│   ├── thresholds.py         # variance-aware + sub-Gaussian, calibrated constants
+│   ├── metrics.py            # ARI, error, s_star computation
+│   └── plotting.py           # shared figure style (matplotlib, paper-ready)
+├── tests/                    # pytest: MMD estimator correctness, threshold coverage,
+│                             # env sanity (means/variances), interface contracts
+├── Makefile                  # data, calibrate, exp1/2/3, smoke, test
+└── pyproject.toml            # numpy, scipy, scikit-learn, joblib, pyarrow, matplotlib
+​```
