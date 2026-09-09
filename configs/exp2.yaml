@@ -1,0 +1,74 @@
+# Experiment 2 -- Identical means, different shapes: nonparametric separation.
+# See docs/experiments.md, "Experiment 2" section. Three instance families
+# (2a/2b/2c), each with its own single sweep dimension; all share N=40, K=2,
+# balanced, the same algorithm roster, and the same budget_cap formula.
+
+exp_id: 2
+delta: 0.05
+reps: 100
+reps_overrides: {}             # no tas-fw in this experiment
+
+seed_multiplier: 1000
+seed_formula: "seed = seed_multiplier * exp_id + rep"
+
+instances:
+  # (2a) Scale pair: cluster A = N(0,1), cluster B = N(0, sigma_B^2).
+  # kabc.environments.ScalePairEnv fixes K=2 internally (not a constructor
+  # kwarg), so `base` only carries N.
+  - family: scale_pair
+    base: {N: 40}               # K=2 fixed internally by ScalePairEnv
+    sweeps:
+      - param: sigma_B
+        values: [1.5, 2, 3, 4]
+    algorithms:
+      - id: kabc
+      - id: kabc-sg
+      - id: kabc-oracle          # needs s_star_sq as an oracle input beyond
+                                  # the standard interface -- run_experiment.py's
+                                  # concern, not this config's; see kabc.py's
+                                  # fit_oracle docstring
+      - id: acb
+        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
+      - id: unif-kkm
+    budget_cap:
+      type: s_star_formula
+      constant: 200
+      formula: "constant * N * s_star**-2 * log(N / delta)"
+
+  # (2b) Moment-matched mixture: cluster A = N(0,1), cluster B =
+  # 0.5*N(-a,b^2) + 0.5*N(a,b^2), b^2 = 1-a^2 (matches mean AND variance;
+  # only shape differs). kabc.environments.MomentMatchedMixtureEnv derives
+  # b from a internally -- not a separate constructor kwarg.
+  - family: moment_matched_mixture
+    base: {N: 40}               # K=2 fixed internally
+    sweeps:
+      - param: a
+        values: [0.5, 0.7, 0.8, 0.9, 0.95]
+    algorithms:
+      - id: kabc
+      - id: kabc-sg
+      - id: kabc-oracle
+      - id: acb
+        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
+      - id: unif-kkm
+    budget_cap:
+      type: s_star_formula
+      constant: 200
+      formula: "constant * N * s_star**-2 * log(N / delta)"
+
+  # (2c) 2D geometry: ring (radius 2, Gaussian noise 0.1) vs N(0,I_2) blob,
+  # both centered at origin. Single configuration -- no sweep.
+  - family: ring_blob
+    base: {N: 40, ring_radius: 2.0, ring_noise: 0.1}   # K=2 fixed internally
+    sweeps: []
+    algorithms:
+      - id: kabc
+      - id: kabc-sg
+      - id: kabc-oracle
+      - id: acb
+        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
+      - id: unif-kkm
+    budget_cap:
+      type: s_star_formula
+      constant: 200
+      formula: "constant * N * s_star**-2 * log(N / delta)"

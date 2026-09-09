@@ -1,0 +1,48 @@
+# Experiment 1 -- Gaussian mixtures: competitiveness in the parametric regime.
+# See docs/experiments.md, "Experiment 1" section, for the full design and
+# expected outcomes. This file encodes only the grid/protocol; algorithm and
+# environment implementations live in src/kabc/.
+
+exp_id: 1
+delta: 0.05                    # confidence level (docs/experiments.md section 0.4)
+reps: 100                      # default Monte Carlo repetitions per configuration
+reps_overrides: {}             # no tas-fw in this experiment (see the algorithms note below)
+
+seed_multiplier: 1000
+seed_formula: "seed = seed_multiplier * exp_id + rep"   # docs/experiments.md section 0.4
+
+# One family: N arms in K balanced clusters, N(mu_k, sigma^2 I_d), sigma=1,
+# cluster means mu_k = Delta/sqrt(2)*(e_{2k-1}+e_{2k}) -- see
+# kabc.environments.GaussianMixtureEnv. `base` keys match its constructor
+# kwargs exactly (N, K, d, Delta, sigma).
+instances:
+  - family: gaussian_mixture
+    base: {N: 60, K: 3, d: 10, Delta: 3, sigma: 1.0}
+    # One knob swept at a time; all other params held at `base`.
+    sweeps:
+      - param: Delta
+        values: [1, 1.5, 2, 3, 4, 6]     # main plot
+      - param: d
+        values: [6, 10, 50, 100]
+        # d=2 excluded: GaussianMixtureEnv's mean construction requires
+        # d >= 2K = 6 for K=3 (each cluster needs its own coordinate pair).
+      - param: N
+        values: [30, 60, 120]
+    algorithms:
+      - id: kabc
+      - id: kabc-sg
+      - id: acb
+      - id: unif-kkm
+      # No tas-fw here: its finite-alphabet assumption doesn't hold for
+      # these continuous Gaussian instances, and the originally-planned
+      # N=15, K=3, d=2 subset is moot anyway (d=2 conflicts with the
+      # d-sweep note above). tas-fw runs only in Experiment 3's reduced
+      # instance -- see docs/experiments.md, Experiment 1 section.
+    budget_cap:
+      type: s_star_formula
+      constant: 200
+      formula: "constant * N * s_star**-2 * log(N / delta)"
+      # s_star is computed at runtime from the constructed instance's known
+      # closed-form separation (docs/experiments.md Fig. 1 note), not stored
+      # here; N and delta are this family's own N (per sweep point) and the
+      # top-level delta above.

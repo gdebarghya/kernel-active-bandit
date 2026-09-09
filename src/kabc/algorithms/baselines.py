@@ -12,7 +12,8 @@ type/range like the other algorithms (so a caller's typo doesn't pass
 silently) and then explicitly discarded, rather than silently ignored.
 
 Procedure: pull n = budget_cap // N samples per arm (uniform, fixed
-schedule, no adaptivity). Represent each arm i by its empirical kernel mean
+schedule, no adaptivity) -- this n is what tau reports, in full, regardless
+of anything below. Represent each arm i by its empirical kernel mean
 embedding mu_hat_i (RBF kernel, median-heuristic bandwidth from a pooled
 sample across all arms, matching kernels.py's convention). Cluster the N
 ARMS (not the raw N*n samples) via kernel k-means on the N x N Gram matrix
@@ -23,6 +24,17 @@ would be infeasible for realistic n (e.g. N=120 arms, n=500: a 60000x60000
 matrix). K_arms is a genuine Gram matrix of real RKHS points (the arms'
 pooled empirical embeddings), hence PSD by construction, exactly the object
 kernel k-means's distance formula assumes.
+
+PERFORMANCE NOTE: even avoiding the full (N*n)x(N*n) matrix, each of the
+N*(N+1)/2 arm-pair blocks itself costs O(n^2) -- and n = budget_cap // N is
+often in the thousands for a realistic s_star_formula-derived budget_cap
+(found empirically: N=12, n~2734 didn't finish an isolated run in 120s).
+So _arm_kernel_matrix computes each K_arms[i,j] from a bounded random
+SUBSAMPLE of each arm's n pulled points (size <= _KERNEL_MATRIX_SAMPLE_SIZE),
+not the full n -- this only affects the precision of the K_arms[i,j] Monte
+Carlo estimate (still an unbiased estimate of <mu_hat_i, mu_hat_j>, just
+noisier for very large n), never tau or which/how many samples were
+actually pulled.
 
 Kernel k-means implementation choice: sklearn has no built-in "kernel
 k-means" estimator -- only KMeans (needs Euclidean features, not a
@@ -53,6 +65,7 @@ from kabc.algorithms import Result
 from kabc.kernels import median_heuristic_bandwidth, rbf_kernel
 
 _BANDWIDTH_SAMPLE_SIZE = 2000  # cap for the pooled median-heuristic (O(n^2) pdist)
+_KERNEL_MATRIX_SAMPLE_SIZE = 300  # per-arm subsample cap for each O(n^2) arm-pair block
 _N_INIT = 10
 _MAX_ITER = 100
 
@@ -83,7 +96,8 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
     tau = N * n
 
     bandwidth = _pooled_bandwidth(arm_samples, rng)
-    arm_kernel = _arm_kernel_matrix(arm_samples, bandwidth)
+    kernel_matrix_samples = [_subsample(X, _KERNEL_MATRIX_SAMPLE_SIZE, rng) for X in arm_samples]
+    arm_kernel = _arm_kernel_matrix(kernel_matrix_samples, bandwidth)
     partition = _kernel_kmeans(arm_kernel, K, rng)
 
     return Result(partition=partition, tau=tau, stopped=True, history=[])
@@ -91,6 +105,13 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
 
 def _pull_batch(env, arm: int, n: int, rng: np.random.Generator) -> np.ndarray:
     return np.stack([np.atleast_1d(np.asarray(env.pull(arm, rng), dtype=float)) for _ in range(n)])
+
+
+def _subsample(X: np.ndarray, max_size: int, rng: np.random.Generator) -> np.ndarray:
+    if X.shape[0] <= max_size:
+        return X
+    idx = rng.choice(X.shape[0], size=max_size, replace=False)
+    return X[idx]
 
 
 def _pooled_bandwidth(arm_samples: list[np.ndarray], rng: np.random.Generator) -> float:

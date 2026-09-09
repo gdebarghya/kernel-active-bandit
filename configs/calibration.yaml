@@ -1,0 +1,36 @@
+# Populated by `make calibrate` (scripts/calibrate_constants.py), per the
+# calibration protocol in docs/experiments.md section 0.2: binary-search the
+# smallest c_cal in [0.01, 1] such that empirical error over 200 calibration
+# runs (20 GMM instances, Exp-1 family, disjoint seeds) stays <= delta/2.
+#
+# Do NOT hand-edit these values -- regenerate via `make calibrate` instead.
+#
+# `null` means "not yet calibrated": callers should fall back to each
+# algorithm's own built-in default (const=1.0 -- the uncalibrated,
+# theoretical constant), NOT treat null as 0 or skip the multiplication.
+c_cal:
+  # Multiplies thresholds.variance_aware_threshold's `const` (Eq. 6's
+  # leading constant), used by kabc.py's fit.
+  kabc: null
+
+  # Multiplies thresholds.subgaussian_threshold's `const`, used by
+  # kabc.py's fit_sg.
+  kabc-sg: null
+
+  # Multiplies acb.py's c1..c6 as a single shared calibrated value. Note:
+  # acb.py keeps c1..c6 as six SEPARATE constants internally (they are not
+  # structurally interchangeable -- see acb.py's module docstring), so a
+  # single scalar here is a simplification for the calibration protocol's
+  # sake; calibrate_constants.py may need to either apply it uniformly to
+  # all six or extend this field to a mapping if per-constant calibration
+  # turns out to matter.
+  acb: null
+
+  # Placeholder only: tas_fw.py's threshold beta(t,delta) (Eq. 66) is fully
+  # specified in the paper with no free leading constant to calibrate --
+  # unlike kabc/acb, nothing in tas_fw.py currently consumes this value.
+  # Included because docs/experiments.md section 0.2 states the calibration
+  # protocol applies to tas-fw too ("so no method is disadvantaged"); kept
+  # here for a possible future modification (e.g. scaling beta(t,delta) down
+  # empirically), not because it's wired up today.
+  tas-fw: null

@@ -190,10 +190,17 @@ def _cluster_once(
     rng: np.random.Generator,
     *,
     threshold: Literal["variance-aware", "subgaussian"],
+    const: float = 1.0,
 ) -> tuple[np.ndarray, int]:
     """One call of Algorithm 1's CLUSTER(n, delta'): draw n fresh samples/arm,
     build the same-cluster graph via the pairwise threshold, return
     (partition, num_clusters) as the graph's connected components.
+
+    `const` multiplies the threshold's entire returned bound (thresholds.py's
+    `const` convention, i.e. the calibration protocol's c_cal, section 0.2) --
+    defaults to 1.0, the theoretical constant. Not exposed via the public
+    `fit`/`fit_sg`; only scripts/calibrate_constants.py is expected to
+    override it, via `_fit` below.
     """
     arm_samples = [_pull_batch(env, i, n, rng) for i in range(N)]
 
@@ -206,9 +213,9 @@ def _cluster_once(
         for j in range(i + 1, N):
             stat = float(np.sqrt(mmd2_plugin(arm_samples[i], arm_samples[j], bandwidth)))
             if threshold == "variance-aware":
-                b_ij = variance_aware_threshold(n, delta_prime, N, variances[i], variances[j])
+                b_ij = variance_aware_threshold(n, delta_prime, N, variances[i], variances[j], const=const)
             else:
-                b_ij = subgaussian_threshold(n, delta_prime, N)
+                b_ij = subgaussian_threshold(n, delta_prime, N, const=const)
             if stat <= b_ij:
                 rows.append(i)
                 cols.append(j)
@@ -225,6 +232,7 @@ def _fit(
     rng: np.random.Generator,
     *,
     threshold: Literal["variance-aware", "subgaussian"],
+    const: float = 1.0,
 ) -> Result:
     """Shared doubling-trick loop behind `fit`/`fit_sg`.
 
@@ -232,6 +240,10 @@ def _fit(
     it is used only in the stopping condition `num_clusters == K` and is
     never an argument here, since `fit`'s signature is fixed by CLAUDE.md's
     shared algorithm interface.
+
+    `const` (default 1.0) is threaded through to `_cluster_once`'s threshold
+    calls -- see its docstring. Not exposed via the public `fit`/`fit_sg`;
+    scripts/calibrate_constants.py calls `_fit` directly to override it.
     """
     N = env.n_arms
     K = env.K
@@ -253,7 +265,9 @@ def _fit(
         if tau + cost_k > budget_cap:
             break  # cannot afford this iteration; report the last completed clustering
 
-        partition, num_clusters = _cluster_once(env, N, n_k, delta_k, bandwidth, rng, threshold=threshold)
+        partition, num_clusters = _cluster_once(
+            env, N, n_k, delta_k, bandwidth, rng, threshold=threshold, const=const
+        )
         tau += cost_k
 
         history.append({"k": k, "n_k": n_k, "delta_k": delta_k, "tau": tau, "num_clusters": num_clusters})

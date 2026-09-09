@@ -164,7 +164,13 @@ Filter to movies with ≥ 1000 ratings.
 empirically per arm — more favorable to acb than a conservative bounded-support
 proxy), unif-kkm. tas-fw on a reduced instance: K = 3 prototypes, 2 arms each
 (N = 6) — its finite-alphabet assumption holds exactly here, making it the
-strongest fair baseline.
+strongest fair baseline. Budget cap: main instance uses the flat 2e6 (below);
+the reduced instance uses its own budget_cap = 20000 instead — the main
+instance's 2e6 would be a meaningless cap at N=6 scale (that number predates
+this reduced instance). Not derived from a formula; chosen to comfortably
+allow convergence for both kabc and tas-fw at this scale while keeping
+tas-fw's expensive per-decision compute bounded to a reasonable total step
+count. See configs/exp3.yaml.
 
 **Figures:**
 1. (Headline) left: rating histograms of the same-mean prototype pair (titles shown);
@@ -175,6 +181,37 @@ strongest fair baseline.
 **Expected outcome:** acb cannot separate the same-mean pair → ARI plateau ~
 (K-2 correct clusters + merged pair); kabc exact recovery; tas-fw competitive on
 the tiny instance but orders of magnitude more compute per decision.
+
+---
+
+## Known limitation: unbounded Gram-matrix cost at hard grid points (open problem)
+
+`kabc.py`'s (and hence `kabc-sg`/`kabc-oracle`'s) per-iteration `mmd2_plugin`/
+`rkhs_variance` calls (`kernels.py`) have no sample-size safeguard -- they
+always materialize a full `n x n` RBF Gram matrix. The doubling trick's own
+`n_k` schedule can legitimately grow large on hard instances (small `s*`),
+and at Exp 2's `moment_matched_mixture` family near `a=0.5` (where the true
+MMD gap approaches 0, `s_star_sq` measured ~0.0024) this is not hypothetical:
+`n_k` reaches ~135k by iteration 13 (one Gram matrix ~146 GB) and ~1.1M by
+iteration 16 (~9.8 TB) before that grid point's real `budget_cap` (~21M,
+correctly computed from the formula in section 0.4 -- not a bug) would stop
+it. `scripts/run_experiment.py`'s `SMOKE_TEST` mode caps `budget_cap` at a
+small ceiling (`SMOKE_TEST_MAX_BUDGET_CAP`) specifically to avoid this during
+smoke tests; the real (non-smoke) `budget_cap` formula is untouched.
+
+This means a real (non-smoke) `make exp2` run will hit the same wall on hard
+grid points like `moment_matched_mixture` near `a=0.5` -- capping the
+budget there for real, or excluding that grid point, would be scientifically
+wrong (section 0.4's budget formula is exactly the quantity Exp 2 is
+designed to measure, and `a=0.5` is the most informative point in that
+sweep, closest to the MMD-gap-to-0 limit). Fixing this needs a real design
+decision -- whether some subsampling approximation inside the Gram-matrix
+computations is acceptable given KABC's theoretical guarantee, or whether
+the algorithm needs actual algorithmic changes (e.g. incremental Gram-matrix
+updates across doubling-trick iterations instead of full recomputation each
+time) -- not attempted here. This is a known, documented open problem
+blocking a real (non-smoke) Experiment 2 run at its hardest grid points, not
+something resolved by this document.
 
 ---
 

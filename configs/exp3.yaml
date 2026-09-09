@@ -1,0 +1,66 @@
+# Experiment 3 -- MovieLens: real rating distributions.
+# See docs/experiments.md, "Experiment 3" section. Two instance families:
+# the main prototype-selected instance (N=40) and a separate, much smaller
+# reduced instance built just for tas-fw (N=6), each with its own roster and
+# budget_cap.
+
+exp_id: 3
+delta: 0.05
+reps: 100
+reps_overrides:
+  tas-fw: 50                   # docs/experiments.md section 0.4: "50 for TaS-FW configs"
+
+seed_multiplier: 1000
+seed_formula: "seed = seed_multiplier * exp_id + rep"
+
+instances:
+  # Main instance: K=4 prototypes (deterministic greedy selection, see
+  # kabc.environments.MovieLensEnv), 10 arms/prototype (N=40). `base` keys
+  # match MovieLensEnv's constructor kwargs exactly. No sweep -- the
+  # prototype-selection procedure fully determines the instance.
+  - family: movielens
+    base:
+      data_dir: data/ml-1m
+      K: 4
+      arms_per_prototype: 10
+      min_ratings: 1000
+      mean_gap_tol: 0.05
+    sweeps: []
+    algorithms:
+      - id: kabc
+      - id: kabc-sg
+      - id: acb
+        notes: "ratings treated as 1D sub-Gaussian; acb's own pilot estimates sigma^2 empirically per arm -- more favorable to acb than a conservative bounded-support proxy (docs/experiments.md Experiment 3)"
+      - id: unif-kkm
+    budget_cap:
+      type: fixed
+      value: 2000000            # docs/experiments.md section 0.4: 2e6 for MovieLens
+
+  # Reduced instance, built specifically for tas-fw: K=3 prototypes, 2
+  # arms each (N=6) -- tas-fw's finite-alphabet assumption holds natively
+  # here (docs/experiments.md Experiment 3). kabc also runs on it for the
+  # small-instance comparison table.
+  - family: movielens_reduced
+    base:
+      data_dir: data/ml-1m
+      K: 3
+      arms_per_prototype: 2
+      min_ratings: 1000
+      mean_gap_tol: 0.05
+    sweeps: []
+    algorithms:
+      - id: tas-fw
+      - id: kabc
+    budget_cap:
+      type: fixed
+      value: 20000
+      notes: >-
+        Not specified in docs/experiments.md -- the main instance's 2e6 would
+        be a meaningless cap at N=6 scale (that number predates this reduced
+        instance; see docs/experiments.md Experiment 3). Chosen to comfortably
+        allow convergence for both kabc and tas-fw at this scale while keeping
+        tas-fw's expensive per-decision compute bounded to a reasonable total
+        step count (tas_fw.py's own docstring: cost per step scales with the
+        Stirling number of hypotheses, S(6,3)=15 restricted to size>=2 blocks
+        here -- trivial per step, so the cap is about total steps, not
+        per-step cost). Revisit once `make exp3` has been run once for real.
