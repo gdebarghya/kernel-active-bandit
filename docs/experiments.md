@@ -50,7 +50,10 @@ disadvantaged. Store calibrated values in `configs/calibration.yaml`.
 - δ = 0.05 everywhere. Monte Carlo: 100 repetitions per configuration
   (50 for TaS-FW configs). Seeds: `seed = 1000*exp_id + rep`.
 - Metrics:
-  - `tau`: stopping budget (adaptive methods).
+  - `tau`: stopping budget (adaptive methods). `tau = 0` specifically signals
+    that `budget_cap` was too tight to even complete the pilot phase (no
+    pulls were made) — distinct from a run that pilots successfully and is
+    then capped mid-run, which always has `tau >= N*n_pilot`.
   - `error`: 1{partition != ground truth} averaged over reps (must be ≤ δ).
   - `ARI(budget)`: for non-stopping/capped methods, Adjusted Rand Index of the
     current partition estimate at budget checkpoints (log-spaced grid).
