@@ -77,7 +77,7 @@ so pairwise separation is exactly Delta (equidistant means).
 **Grid (one knob at a time, others at base):**
 - Base: N = 60, K = 3, d = 10, Delta = 3.
 - Sweep Delta in {1, 1.5, 2, 3, 4, 6} (main plot).
-- Sweep d in {2, 10, 50, 100} at Delta = 3.
+- Sweep d in {6, 10, 50, 100} at Delta = 3. (d=2 excluded: GaussianMixtureEnv's mean construction requires d ≥ 2K = 6 for K=3, to place K orthogonal mean-pairs.)
 - Sweep N in {30, 60, 120} at Delta = 3.
 - TaS-FW subset: N = 15, K = 3, d = 2, Delta in {2, 3, 4} only.
 
