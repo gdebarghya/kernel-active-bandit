@@ -25,12 +25,17 @@ def _balanced_partition(N: int, K: int) -> np.ndarray:
 
 
 class Environment:
-    """Shared attributes for all environments: `n_arms`, `true_partition`.
+    """Shared attributes for all environments: `n_arms`, `K`, `true_partition`.
 
-    Subclasses set both in `__init__` and implement `pull`.
+    Subclasses set all three in `__init__` and implement `pull`. `K` (the
+    ground-truth number of clusters) is read by algorithms like KABC that
+    need it as a stopping-condition input but can't take it as a `fit`
+    parameter, since CLAUDE.md's shared algorithm interface fixes `fit`'s
+    signature to `(env, delta, budget_cap, rng)` across all algorithms.
     """
 
     n_arms: int
+    K: int
     true_partition: np.ndarray
 
     def _validate_arm_index(self, arm_index: int) -> int:
@@ -104,6 +109,7 @@ class ScalePairEnv(Environment):
         if sigma_B <= 0:
             raise ValueError(f"sigma_B must be > 0, got {sigma_B!r}")
         self.N = N
+        self.K = 2
         self.sigma_B = sigma_B
         self.true_partition = _balanced_partition(N, 2)
         self.n_arms = N
@@ -125,6 +131,7 @@ class MomentMatchedMixtureEnv(Environment):
         if not 0.0 < a < 1.0:
             raise ValueError(f"a must be in (0, 1) so that b^2 = 1 - a^2 > 0, got {a!r}")
         self.N = N
+        self.K = 2
         self.a = a
         self.b = float(np.sqrt(1.0 - a**2))
         self.true_partition = _balanced_partition(N, 2)
@@ -151,6 +158,7 @@ class RingBlobEnv(Environment):
         if ring_noise <= 0:
             raise ValueError(f"ring_noise must be > 0, got {ring_noise!r}")
         self.N = N
+        self.K = 2
         self.ring_radius = ring_radius
         self.ring_noise = ring_noise
         self.true_partition = _balanced_partition(N, 2)

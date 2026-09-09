@@ -45,4 +45,8 @@ calling convention in experiment scripts.
 - `data/` and `results/` are gitignored and claudeignored — never read result parquet
   files directly into context; summarize via pandas in a script/notebook cell instead
 - Config (grids, seeds, budget caps) lives in `configs/*.yaml`, not hardcoded in `src/`
+- If a task requires editing a file outside what was explicitly asked, flag it and
+  stop for confirmation before making the edit — even for small, clearly-correct
+  fixes (e.g., a necessary interface addition in a sibling file). Don't fold it in
+  silently.
 EOF
