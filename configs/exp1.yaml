@@ -28,6 +28,19 @@ instances:
         # d >= 2K = 6 for K=3 (each cluster needs its own coordinate pair).
       - param: N
         values: [30, 60, 120]
+    # Crossed with EVERY (swept_param, swept_value) grid point above (not
+    # folded into `sweeps`, which is one-knob-at-a-time and would only touch
+    # `base`) -- 1.0 reproduces the existing 13 grid points unchanged; 0.25
+    # is the new restricted-budget pass (docs/experiments.md's "how well do
+    # these methods degrade when queries are scarce" figure, complementary
+    # to the delta-PAC guaranteed-budget headline Fig. 1, not a replacement
+    # for it). Doubles Exp 1's total run count (13 grid points x 2
+    # multipliers). Omitting this field entirely (as exp2.yaml/exp3.yaml do)
+    # defaults to [1.0] -- confirmed byte-identical output to before this
+    # field existed, aside from an unrelated, already-documented
+    # stop_reason labeling change (see docs/experiments.md section 0.2's
+    # kabc.py safeguards note).
+    budget_multipliers: [1.0, 0.25]
     algorithms:
       - id: kabc
       - id: kabc-sg

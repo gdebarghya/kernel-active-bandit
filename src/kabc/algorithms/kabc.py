@@ -57,6 +57,52 @@ from kabc.thresholds import (
 
 N_PILOT = 5
 
+# MAX_ITERATIONS: a generous backstop on the doubling-trick loop's iteration
+# count, NOT a memory-safety mechanism (that's MEMORY_GUARD_* below) -- it
+# exists only so a future bug (e.g. a broken budget_cap check) can't spin
+# forever, and should almost never bind on any legitimate, solvable
+# instance. Sizing: n_k = ceil(2**k * log_term) grows geometrically, so even
+# this repo's most extreme documented budget_cap (~21M, Exp 2's
+# moment_matched_mixture near a=0.5 -- see docs/experiments.md's "Known
+# limitation" section) exhausts by k~16-17 via the ordinary budget_cap
+# check, and MEMORY_GUARD_* below (independent of N, budget_cap, or delta)
+# trips around k~6-10 on any instance whose doubling trick pushes n_k that
+# large. MAX_ITERATIONS=50 sits far above where either of those two other
+# mechanisms would already have stopped the loop, so it is a true backstop,
+# not a third thing that competes with them for which one binds first.
+MAX_ITERATIONS = 50
+
+# STOP REASONS -- appended as history[-1] = {"stop_reason": ...} whenever
+# the loop/one-shot ends WITHOUT successful convergence (num_clusters == K),
+# distinguishing why: ran out of budget mid-schedule (or couldn't afford the
+# pilot / next iteration at all), hit the MAX_ITERATIONS backstop, or the
+# memory guard refused to attempt an iteration whose Gram matrices would be
+# unsafe to allocate. Not a new Result field (Result's schema is shared
+# across every algorithm module, per CLAUDE.md's fixed interface -- adding a
+# field there needs sign-off beyond this change) -- history is already a
+# free-form list[dict], so this reuses it rather than widening Result.
+STOP_REASON_BUDGET_CAP = "budget_cap"
+STOP_REASON_MAX_ITERATIONS = "max_iterations"
+STOP_REASON_MEMORY_GUARD = "memory_guard"
+
+# MEMORY GUARD: _cluster_once's dominant simultaneous allocation is
+# mmd2_plugin's three n x n Gram matrices (Kxx, Kyy, Kxy) held alive at once
+# within a single pair's call -- NOT all N*(N-1)/2 pairs' matrices at once,
+# and not rkhs_variance's (single, smaller) matrix either. Each pair (or
+# each arm, for rkhs_variance under the variance-aware threshold) is
+# computed and its Gram matrix(es) freed via ordinary CPython refcounting
+# before the next one starts -- confirmed by reading _cluster_once itself,
+# not assumed. So peak memory scales with n**2 (the per-iteration sample
+# size), NOT with N*(N-1)/2 or N (how many such computations happen doesn't
+# raise the PEAK, only the total work) -- despite the code path being
+# initially motivated by docs/experiments.md's "66 arm-pairs' mmd2_plugin +
+# 12 arms' rkhs_variance at N=12" framing, that count describes the number
+# of sequential calls, not a simultaneous allocation multiplier.
+MEMORY_GUARD_MATRICES_PER_CALL = 3  # Kxx, Kyy, Kxy alive together in mmd2_plugin (the binding case; rkhs_variance's 1 matrix is strictly smaller)
+MEMORY_GUARD_SAFETY_FACTOR = 4  # headroom for sklearn/BLAS transient buffers (e.g. rbf_kernel's internal squared-distance intermediates) beyond the 3 persistent arrays, and for imprecise GC timing
+MEMORY_GUARD_N_WORKERS = 11  # matches this repo's own joblib Parallel(n_jobs=-2) convention (run_experiment.py, calibrate_constants.py) on a 12-core machine -- every concurrent worker could hit this same peak at once
+MEMORY_GUARD_SAFE_TOTAL_BYTES = 8 * 1024**3  # 8 GiB: comfortable headroom under a 16GB target, leaving room for the OS, the Python/numpy baseline footprint, and every other array each worker holds besides the Gram matrices themselves
+
 
 def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
     """KABC: variance-aware threshold (Wolfer-Alquier style, Eq. 6). Main method.
@@ -126,11 +172,29 @@ def fit_oracle(
             f"with only the pilot phase completed",
             stacklevel=2,
         )
-        return Result(partition=np.zeros(N, dtype=int), tau=tau, stopped=False, history=[])
+        return Result(
+            partition=np.zeros(N, dtype=int),
+            tau=tau,
+            stopped=False,
+            history=[{"stop_reason": STOP_REASON_BUDGET_CAP}],
+        )
 
-    partition, num_clusters = _cluster_once(
-        env, N, n_star, delta, bandwidth, rng, threshold="variance-aware"
-    )
+    try:
+        partition, num_clusters = _cluster_once(
+            env, N, n_star, delta, bandwidth, rng, threshold="variance-aware"
+        )
+    except _MemoryGuardExceeded as e:
+        warnings.warn(
+            f"memory guard refused kabc-oracle's one-shot n*={n_star} ({e}); "
+            f"returning stopped=False with only the pilot phase completed",
+            stacklevel=2,
+        )
+        return Result(
+            partition=np.zeros(N, dtype=int),
+            tau=tau,
+            stopped=False,
+            history=[{"stop_reason": STOP_REASON_MEMORY_GUARD, "n_star": n_star}],
+        )
     tau += cost
     history = [{"k": 1, "n_k": n_star, "delta_k": delta, "tau": tau, "num_clusters": num_clusters}]
 
@@ -172,13 +236,63 @@ def _pilot_or_graceful_stop(
             f"with no pulls made (tau=0)",
             stacklevel=3,
         )
-        return 0, None, Result(partition=np.zeros(N, dtype=int), tau=0, stopped=False, history=[])
+        return (
+            0,
+            None,
+            Result(
+                partition=np.zeros(N, dtype=int),
+                tau=0,
+                stopped=False,
+                history=[{"stop_reason": STOP_REASON_BUDGET_CAP}],
+            ),
+        )
 
     # Pilot phase: n_pilot pulls/arm, pooled, for the median-heuristic bandwidth.
     # Counts toward tau; discarded afterward (not reused by the main loop).
     pilot = [_pull_batch(env, i, N_PILOT, rng) for i in range(N)]
     bandwidth = median_heuristic_bandwidth(np.concatenate(pilot, axis=0))
     return pilot_cost, bandwidth, None
+
+
+class _MemoryGuardExceeded(Exception):
+    """Raised by `_check_memory_guard` when the projected Gram-matrix memory
+    footprint at a given `n` exceeds MEMORY_GUARD_SAFE_TOTAL_BYTES. Caught by
+    `_fit`'s loop and `fit_oracle` to produce a graceful
+    Result(stopped=False, ...) instead of risking an OOM or severe thrashing
+    slowdown -- see MEMORY_GUARD_* constants' docstrings for the sizing
+    reasoning, and docs/experiments.md's "Known limitation" section for the
+    real incident (Exp 2's moment_matched_mixture near a=0.5) this guards
+    against.
+    """
+
+    def __init__(self, n: int, projected_bytes: int):
+        self.n = n
+        self.projected_bytes = projected_bytes
+        super().__init__(
+            f"n={n} would need ~{projected_bytes / 1024**3:.2f} GiB across "
+            f"{MEMORY_GUARD_N_WORKERS} concurrent workers "
+            f"(> {MEMORY_GUARD_SAFE_TOTAL_BYTES / 1024**3:.0f} GiB safety budget)"
+        )
+
+
+def _check_memory_guard(n: int) -> None:
+    """Raises _MemoryGuardExceeded if attempting Gram-matrix computations at
+    this `n` would be unsafe. Called at the TOP of `_cluster_once`, before
+    any samples are pulled or any Gram matrix is built -- if we're going to
+    refuse this `n`, there's no reason to spend the pulls first.
+
+    projected_bytes = MEMORY_GUARD_N_WORKERS * MEMORY_GUARD_MATRICES_PER_CALL
+        * MEMORY_GUARD_SAFETY_FACTOR * n**2 * 8 (bytes/float64), i.e. every
+    concurrent worker independently hitting the same PEAK simultaneous
+    allocation (3 Gram matrices of shape (n,n), not N*(N-1)/2 or N of them --
+    see MEMORY_GUARD_MATRICES_PER_CALL's docstring for why), times a safety
+    margin.
+    """
+    projected_bytes = (
+        MEMORY_GUARD_N_WORKERS * MEMORY_GUARD_MATRICES_PER_CALL * MEMORY_GUARD_SAFETY_FACTOR * (n**2) * 8
+    )
+    if projected_bytes > MEMORY_GUARD_SAFE_TOTAL_BYTES:
+        raise _MemoryGuardExceeded(n, projected_bytes)
 
 
 def _cluster_once(
@@ -201,7 +315,12 @@ def _cluster_once(
     defaults to 1.0, the theoretical constant. Not exposed via the public
     `fit`/`fit_sg`; only scripts/calibrate_constants.py is expected to
     override it, via `_fit` below.
+
+    Raises _MemoryGuardExceeded (via `_check_memory_guard`) before pulling
+    any samples if this `n` would be unsafe to attempt -- see that function's
+    docstring.
     """
+    _check_memory_guard(n)
     arm_samples = [_pull_batch(env, i, n, rng) for i in range(N)]
 
     if threshold == "variance-aware":
@@ -259,15 +378,29 @@ def _fit(
     k = 0
     while True:
         k += 1
+        if k > MAX_ITERATIONS:
+            history.append({"stop_reason": STOP_REASON_MAX_ITERATIONS})
+            break  # backstop only -- see MAX_ITERATIONS's docstring; budget_cap or the
+            # memory guard should ordinarily have already stopped the loop well before this
+
         delta_k = iteration_confidence(k, delta)
         n_k = iteration_budget(k, N, delta_k)
         cost_k = N * n_k
         if tau + cost_k > budget_cap:
+            history.append({"stop_reason": STOP_REASON_BUDGET_CAP})
             break  # cannot afford this iteration; report the last completed clustering
 
-        partition, num_clusters = _cluster_once(
-            env, N, n_k, delta_k, bandwidth, rng, threshold=threshold, const=const
-        )
+        try:
+            new_partition, num_clusters = _cluster_once(
+                env, N, n_k, delta_k, bandwidth, rng, threshold=threshold, const=const
+            )
+        except _MemoryGuardExceeded as e:
+            history.append({"stop_reason": STOP_REASON_MEMORY_GUARD, "k": k, "n_k": n_k, "reason": str(e)})
+            break  # report the last completed clustering; this iteration's cost is NOT
+            # added to tau, matching the budget_cap path's convention of not charging
+            # for an iteration that was never actually attempted
+
+        partition = new_partition
         tau += cost_k
 
         history.append({"k": k, "n_k": n_k, "delta_k": delta_k, "tau": tau, "num_clusters": num_clusters})

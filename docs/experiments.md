@@ -37,6 +37,163 @@ where `c_cal` is calibrated ONCE, globally, as follows:
 Same protocol applied independently to `acb` and `tas-fw` so no method is
 disadvantaged. Store calibrated values in `configs/calibration.yaml`.
 
+**Deviation from steps 1-2 above, as actually implemented in
+`scripts/calibrate_constants.py` (compute-constraint, illustrative-supplement
+scope):** a real (non-smoke) calibration run against the literal protocol —
+200 runs/binary-search step, 15 bisection iterations — was benchmarked before
+committing to it: kabc's own per-run cost at the generous calibration
+`budget_cap` ranges up to ~100s+ near `c_cal=1.0` (the theoretical constant,
+tested first in the search), and `calibrate_constants.py` has no equivalent
+of `run_experiment.py`'s `joblib.Parallel` across its within-step runs at the
+time this was scoped, making the literal protocol impractical for this
+repo's laptop-scale, illustrative-supplement goals (not a paper-submission
+compute budget). Implemented instead:
+
+- 100 calibration runs per binary-search step (20 pull-noise seed groups ×
+  5 reps each, halving step 1's implied reps-per-instance), and again for
+  held-out validation. **Correction to step 1 above:** step 1's "20 GMM
+  instances" was never achievable with `GaussianMixtureEnv` as implemented —
+  its constructor takes no seed and has no other source of randomness
+  (cluster means are a deterministic closed-form function of
+  `(N,K,d,Delta,sigma)`), matching how `run_experiment.py`/`configs/exp1.yaml`
+  already use it (one fixed instance per grid point). So all 20 "instance
+  seeds" build the identical instance; only the per-rep pull-noise RNG
+  varies. What actually runs is 100 flat, independently-seeded reps against
+  one fixed instance — a well-defined empirical error estimate, just not "20
+  distinct instances" the way step 1's prose implies. `configs/calibration.yaml`'s
+  header comment and `scripts/calibrate_constants.py`'s module docstring
+  record this correction too.
+- 8 bisection iterations instead of 15 (still resolves `c_cal` to within
+  `(1-0.01)/2^8 ≈ 0.004` of the true smallest-safe value on `[0.01,1]` —
+  ample precision for a leading multiplicative constant used only to reduce
+  the theoretical threshold's known conservatism, not for a value with
+  application-level sensitivity at the 0.001 scale).
+- Runs within one binary-search step ARE now parallelized (`joblib.Parallel`,
+  `n_jobs=-2`, matching `run_experiment.py`'s own pattern), each run capped
+  to a single BLAS thread (env vars + `threadpoolctl`) -- without the cap,
+  the 11 concurrent worker processes each independently multi-threaded their
+  own Gram-matrix computations, oversubscribing the 12 physical cores and
+  making a real calibration run's wall-clock badly unpredictable (confirmed
+  empirically: one worker process burned ~2.7x more CPU-seconds than
+  wall-clock elapsed before this was caught and fixed).
+- The search no longer empirically re-verifies `c_cal=1.0` (the theoretical
+  constant) before bisecting -- it is the algorithm's own proven threshold
+  constant (Eq. 6), safe by construction, and that single upfront check
+  measured as ~79 of kabc's ~100-minute total calibration wall-clock, the
+  most expensive single step by far, spent reconfirming something the proof
+  already guarantees. Bisection instead searches `[LO, SEARCH_HI]` directly
+  (see below for both bounds), trusting `1.0` as a safe-but-unsearched upper
+  endpoint; if no candidate the search actually tries passes, that is
+  reported as a real negative result (`c_cal: null` in
+  `configs/calibration.yaml`, with an explanatory comment distinguishing it
+  from "never run") -- NOT silently papered over by falling back to an
+  unverified expensive candidate.
+- `SEARCH_HI = 0.6` for kabc/kabc-sg (not `1.0`): real single-run timing
+  (each run capped to 1 BLAS thread -- see the oversubscription bullet
+  above) showed cost is cheap for `const` in roughly `[0.1, 0.5]`
+  (single-digit to ~30s/run) and explodes near `1.0` (~520s/run); letting
+  the search itself climb back toward `1.0` would re-walk into that region
+  for no benefit, since the search only ever moves toward smaller `const`
+  on a pass. **acb uses a WIDER `SEARCH_HI = 0.95` instead** -- confirmed
+  empirically (single runs, not the full batch) that acb stays sub-second
+  (0.02-0.04s) across the whole range up to `1.0`, so the cost reason for
+  capping at `0.6` doesn't apply to it; the original `[0.1, 0.6]` search
+  found no passing candidate anywhere (best: `const=0.598`, error 0.03,
+  still above `delta/2`), and widening to `0.95` found `c_cal=0.6611` with
+  both calibration-set and held-out error comfortably under threshold. See
+  `configs/calibration.yaml`'s `acb` entry for the recorded detail.
+- `LO = 0.1` (raised from `0.01`, NOT for compute-cost reasons -- see the
+  safeguards bullet below, which already makes any `const` in `[0.01,1]`
+  safe to attempt): investigating a run that took 448.6s and still failed to
+  converge at `const=0.0192` found that `const=0.022` (barely larger)
+  converges trivially (2.1s, 1 iteration), and `const=0.025` does too. The
+  region just below ~0.02 is not a smooth continuation of "smaller const,
+  harder problem" -- it is an unstable discontinuity where a run avoids
+  reporting a wrong partition only by exhausting `budget_cap` first
+  (`stopped=False`), not because the threshold is genuinely resolving edges.
+  `const=0.126` (comfortably above the new `LO`) behaves normally (7.8s,
+  real convergence). A `c_cal` the search could otherwise land on near the
+  old `LO=0.01` would be numerically fast to validate but not a genuine
+  reflection of the threshold separating clusters -- not a constant this
+  protocol should ever freeze.
+- **Safeguards added to `kabc.py`'s doubling-trick loop** (`_fit`, shared by
+  `fit`/`fit_sg`, and `fit_oracle`'s one-shot `_cluster_once` call), found
+  necessary by the same investigation: a `MAX_ITERATIONS=50` backstop (far
+  above where `budget_cap` or the memory guard below would already have
+  stopped the loop on any real instance in this repo -- a true backstop, not
+  a binding constraint) and an explicit memory guard inside `_cluster_once`
+  (before pulling any samples, estimate the Gram-matrix memory footprint at
+  a given `n`: `_cluster_once`'s actual peak simultaneous allocation is 3
+  `n x n` matrices, not `N*(N-1)/2` of them -- confirmed by reading the code,
+  since each pair's matrices are computed and freed before the next pair
+  starts -- so `11 workers * 3 matrices * 4x safety factor * n**2 * 8 bytes`,
+  capped at 8 GiB total, trips at `n_k > 2852`). Both produce the existing
+  graceful `Result(stopped=False, ...)` pattern with a new
+  `history[-1] = {"stop_reason": "budget_cap"|"max_iterations"|"memory_guard"}`
+  marker (the existing budget_cap early-exits were retrofitted with the same
+  marker too, for consistency) -- not a new `Result` field, since that
+  dataclass is shared across every algorithm module per this doc's fixed
+  `fit` interface. These make every `const` in `[0.01,1]` safe to attempt
+  (nothing hangs indefinitely or risks OOM) -- they do NOT make the
+  near-`LO=0.01` region fast OR numerically meaningful, which is why `LO`
+  was raised regardless of the safeguards existing.
+
+This is a real, documented deviation from the protocol as literally stated
+above, not a silent substitution -- `configs/calibration.yaml`'s header
+comment and `scripts/calibrate_constants.py`'s module docstring both record
+it too.
+
+**PROTOCOL CORRECTION: calibration budget regime must match deployment.**
+All of the above was originally run under a `budget_cap` 5x the real
+formula-derived value ("generous", meant to keep calibration runs from ever
+hitting the cap, so error would isolate the threshold's own tightness).
+This was wrong: budget exhaustion IS part of what a real experiment
+experiences, and calibrating against an artificially generous cap doesn't
+validate error under the conditions deployment will actually use.
+Discovered concretely: kabc-sg calibrated under the 5x cap measured 2%
+error; re-run at Exp 1's real base-grid-point cap (71,055) it showed 14% --
+nearly 3x over `delta/2=0.025`, entirely from `stopped=False` runs that
+would have resolved given more budget but don't get it in a real run.
+Fixed: `scripts/calibrate_constants.py`'s `_real_budget_cap` (replacing
+`_generous_budget_cap`) uses the exact formula `run_experiment.py` uses for
+a real grid point (`constant=200`, `s_star_sq` via `estimate_s_star_sq`),
+no margin. `SEARCH_HI` also widened back to `1.0` (from `0.6`) for this
+re-run: under the real (tighter) cap, cost near `const=1.0` dropped from
+~520s/run to ~117s/run (kabc) -- the tighter budget makes the algorithm
+give up sooner regardless of constant -- so the earlier cost argument for
+excluding that region no longer holds as strongly, and const=1.0 is no
+longer safely assumable to satisfy `error<=delta/2` under a fixed budget
+purely because it's the theoretical constant (the theorem guarantees
+eventual correctness given unlimited patience, not convergence within any
+particular fixed budget).
+
+Re-calibrating under the real cap: **kabc** was essentially unaffected
+(`0.1035` vs the generous-cap run's `0.1020`, zero error both ways) --
+confirms kabc's earlier calibration was already representative. **acb**
+was also confirmed fine (`0.6590` vs `0.6611`, held-out error 0.01 both
+times) -- checked directly, not assumed safe just because Exp 1's
+real-cap benchmark happened to show a low error rate for it.
+
+**kabc-sg hit its known cliff again, closer this time, and its OWN
+held-out check caught a real problem:** the bisection's literal answer
+(`0.117578`, calibration-set error 2%) FAILED held-out validation at 5%
+error -- on a fresh sample of the same fixed instance, not a different
+one. Rather than accept this literal answer, `0.121094` was frozen
+instead -- the bisection's own iteration 7 candidate, one step before the
+search descended into the cliff (`const=0.1141`, 22% error) -- trading a
+little search-set efficiency for real margin above demonstrated
+instability. Re-validated on the SAME held-out block that failed
+`0.117578`: `0.0000` error. `configs/calibration.yaml`'s `kabc-sg` entry
+records this override and the reasoning inline.
+
+This incident is itself evidence for why calibration must target the real
+budget regime: under the generous cap, kabc-sg's cliff sat further from
+where bisection actually landed (`0.115625`, comfortably passing both
+checks); under the real cap, the cliff sits close enough that a single
+100-run sample isn't always enough to reliably characterize which side of
+it a candidate is on -- exactly why the held-out check exists, and exactly
+why it was trusted here instead of the raw calibration-set result.
+
 ### 0.3 Kernel and bandwidth
 
 - Kernel: Gaussian RBF, characteristic on R^d.
@@ -60,6 +217,17 @@ disadvantaged. Store calibrated values in `configs/calibration.yaml`.
 - Budget cap: `budget_cap = 200 * N * s_star^{-2} * log(N/delta)` when s* known
   (synthetic), else `2e6` pulls (MovieLens). A run hitting the cap records
   `stopped=False`, ARI at cap.
+- **ARI-at-cap applies to ANY algorithm's `stopped=False` runs, not just ACB's**
+  (ACB was simply the algorithm this design originally expected to hit that
+  state routinely, being mean-blind on same-mean families -- it is not a
+  metric restricted to ACB). `metrics.ari`/`run_experiment.py`'s result row
+  already compute `ari` unconditionally for every run regardless of
+  algorithm or `stopped` value (checked directly, no code change needed) --
+  a capped kabc or kabc-sg run reports a real ARI-at-cap exactly the same
+  way a capped ACB run does. This matters in practice: pre-calibration (or
+  at a hard grid point) kabc/kabc-sg CAN also end up `stopped=False`, and
+  that run's ARI is still meaningful diagnostic information, not just a
+  binary error=1 to discard.
 - Parallelism: `joblib` over repetitions, `n_jobs=-2`. Every notebook has a
   `SMOKE_TEST = True` flag (reduces reps to 5, grid to 2 points) for fast iteration.
 - All results saved as parquet in `results/expN/`; notebooks only load + plot,
@@ -97,10 +265,40 @@ Experiment 3 below.
 1. (Headline) log tau vs log Delta, all methods; dashed overlay of the theoretical
    slope s*^{-2} (compute s* in closed form for RBF + Gaussians numerically).
 2. tau box plots vs d (does the nonparametric price grow with d?).
-3. Table: empirical error per method per config (validate ≤ δ).
+3. Table: empirical error per method per config (validate ≤ δ), alongside
+   ARI-at-cap for any `stopped=False` rows (per §0.4's ARI-at-cap
+   generalization -- not exclusive to acb; see the calibration-diagnostic
+   note below for why this matters specifically for kabc-sg).
 4. (Appendix) theoretical-constants vs calibrated-constants panel.
 
 **Expected outcome:** acb < kabc < kabc-sg in budget, gaps modest; error ≤ δ everywhere.
+
+**Calibration diagnostic finding, relevant to interpreting kabc-sg's error
+here:** while calibrating `c_cal` (`configs/calibration.yaml`), kabc-sg's
+rare failures at constants near its frozen value were investigated directly
+(reproduced misclassified partitions, not just aggregate error rates).
+Every failure observed was a **near-miss** (ARI 0.926-0.975), not a
+qualitatively wrong clustering: typically 1-3 "straggler" arms failing to
+join their true cluster while every other arm is placed correctly, and the
+run exhausts its budget (`stopped=False`) rather than converging to a
+confidently wrong partition. The mechanism: `subgaussian_threshold` is
+**not per-pair adaptive** — it uses only the fixed kernel bound `g_bar=1.0`
+and the sample size `n`, identical for every arm pair regardless of that
+pair's own empirical spread. One shared cutoff must simultaneously satisfy
+every pair, so whichever single pair is noisiest for a given draw determines
+whether the whole clustering resolves; since the statistic's sampling noise
+and the threshold shrink at the same asymptotic rate in `n`, a borderline
+pair does not resolve with more samples, it stays borderline until the
+budget runs out. `variance_aware_threshold` (kabc's own threshold, Eq. 6)
+sizes each pair's cutoff from that pair's *empirical* RKHS variance, so a
+noisier pair automatically gets a proportionally larger threshold — and
+correspondingly, kabc showed zero comparable instability across its entire
+calibration search (constants from 1.0 down to 0.102, uniformly zero
+error), while kabc-sg's search hit a sharp, narrow cliff specifically near
+its frozen constant. This is direct empirical evidence for the paper's own
+claim about the benefit of variance-aware bounds over the kernel-uniform
+sub-Gaussian ablation -- worth citing in the writeup discussion of kabc-sg's
+results, not only as internal calibration QA.
 
 ---
 
@@ -175,7 +373,10 @@ count. See configs/exp3.yaml.
 **Figures:**
 1. (Headline) left: rating histograms of the same-mean prototype pair (titles shown);
    right: ARI vs budget — acb plateaus < 1, kabc reaches 1 and stops (mark tau).
-2. Table: tau and error for kabc/kabc-sg; ARI-at-cap for acb.
+2. Table: tau and error for every algorithm; ARI-at-cap wherever `stopped=False`
+   occurs (expected routinely for acb on this same-mean-blind instance, but not
+   assumed exclusive to it -- report it for kabc/kabc-sg too if either ends up
+   capped on a given run, per §0.4's ARI-at-cap generalization).
 3. Small-instance table: tas-fw vs kabc on the N = 6 instance.
 
 **Expected outcome:** acb cannot separate the same-mean pair → ARI plateau ~

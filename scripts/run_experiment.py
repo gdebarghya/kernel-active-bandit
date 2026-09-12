@@ -66,17 +66,37 @@ import os
 import time
 from pathlib import Path
 
+# BLAS THREAD CAP -- must be set before numpy (or anything importing it) is
+# first imported in THIS process, so it applies whether the process is the
+# main one or a joblib/loky worker (loky uses spawn: each worker re-executes
+# this module's imports from scratch, inheriting this process's os.environ
+# at spawn time). Without this, each of joblib's n_jobs=-2 worker processes
+# independently multi-threads its own Gram-matrix/pairwise-distance BLAS
+# calls, oversubscribing the physical cores several times over -- the same
+# issue found and fixed in scripts/calibrate_constants.py (see that module's
+# docstring and docs/experiments.md section 0.2 for the measured evidence:
+# one worker process burned ~2.7x more CPU-seconds than wall-clock elapsed).
+# This file uses the identical joblib.Parallel(n_jobs=-2) pattern and was
+# never protected against the same oversubscription -- earlier exp1 timing
+# benchmarks run against this script's _run_one likely understate true
+# per-run cost for the same reason, though the 11-way process parallelism
+# partially masked it there too. Covers the three common BLAS backends since
+# it isn't confirmed which one numpy/scipy resolved to in this environment.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import numpy as np
 import pandas as pd
+import threadpoolctl
 import yaml
 from joblib import Parallel, delayed
 
 from kabc import metrics
-from kabc.algorithms.acb import fit as acb_fit
+from kabc.algorithms.acb import _fit as _acb_fit_internal
 from kabc.algorithms.baselines import fit as unif_kkm_fit
-from kabc.algorithms.kabc import fit as kabc_fit
+from kabc.algorithms.kabc import _fit as _kabc_fit_internal
 from kabc.algorithms.kabc import fit_oracle as kabc_oracle_fit
-from kabc.algorithms.kabc import fit_sg as kabc_sg_fit
 from kabc.algorithms.tas_fw import fit as tas_fw_fit
 from kabc.environments import (
     GaussianMixtureEnv,
@@ -86,11 +106,57 @@ from kabc.environments import (
     ScalePairEnv,
 )
 
+CALIBRATION_PATH = Path("configs/calibration.yaml")
+
+
+def _load_c_cal() -> dict[str, float | None]:
+    """Loads configs/calibration.yaml's frozen constants, mapping algorithm
+    id -> calibrated const (or None if that algorithm's value is null --
+    "not yet calibrated", per that file's own header comment). Missing file
+    entirely (e.g. before `make calibrate` has ever run) is treated the same
+    as "everything null": every algorithm falls back to its own built-in
+    uncalibrated default (const=1.0).
+
+    This closes a gap this repo had for a while: kabc.py's/acb.py's PUBLIC
+    fit/fit_sg entry points correctly don't take a const override (CLAUDE.md's
+    fit interface is fixed at (env, delta, budget_cap, rng)), so nothing
+    previously read this file at experiment-run time -- calibrating
+    constants had no effect on a real `make exp1/2/3` run until this wiring
+    was added. See docs/experiments.md section 0.2.
+    """
+    if not CALIBRATION_PATH.exists():
+        print(f"WARNING: {CALIBRATION_PATH} not found -- every algorithm will use its uncalibrated default (const=1.0)")
+        return {}
+    with open(CALIBRATION_PATH) as f:
+        raw = yaml.safe_load(f)["c_cal"]
+    c_cal = {k: (v.get("value") if v else None) for k, v in raw.items()}
+    for algo_id, value in c_cal.items():
+        if value is None and algo_id != "tas-fw":  # tas-fw has no calibratable constant at all -- expected null
+            print(f"WARNING: c_cal[{algo_id!r}] is null -- this run will use its uncalibrated default (const=1.0)")
+    return c_cal
+
+
+_C_CAL = _load_c_cal()
+
+
+def _kabc_fit(env, delta, budget_cap, rng):
+    return _kabc_fit_internal(env, delta, budget_cap, rng, threshold="variance-aware", const=_C_CAL.get("kabc") or 1.0)
+
+
+def _kabc_sg_fit(env, delta, budget_cap, rng):
+    return _kabc_fit_internal(env, delta, budget_cap, rng, threshold="subgaussian", const=_C_CAL.get("kabc-sg") or 1.0)
+
+
+def _acb_fit(env, delta, budget_cap, rng):
+    c = _C_CAL.get("acb") or 1.0
+    return _acb_fit_internal(env, delta, budget_cap, rng, c1=c, c2=c, c3=c, c4=c, c5=c, c6=c)
+
+
 ALGORITHMS = {
-    "kabc": kabc_fit,
-    "kabc-sg": kabc_sg_fit,
-    "kabc-oracle": kabc_oracle_fit,
-    "acb": acb_fit,
+    "kabc": _kabc_fit,
+    "kabc-sg": _kabc_sg_fit,
+    "kabc-oracle": kabc_oracle_fit,  # unaffected: fit_oracle has no const override in its fixed signature (see its docstring) -- out of scope here, oracle isn't used by Exp 1
+    "acb": _acb_fit,
     "tas-fw": tas_fw_fit,
     "unif-kkm": unif_kkm_fit,
 }
@@ -174,9 +240,19 @@ def _apply_smoke_test(family_cfg: dict) -> dict:
     return cfg
 
 
-def _resolve_budget_cap(budget_cap_cfg: dict, N: int, delta: float, env, rng: np.random.Generator):
+def _resolve_budget_cap(
+    budget_cap_cfg: dict, N: int, delta: float, env, rng: np.random.Generator, budget_multiplier: float = 1.0
+):
     """Returns (budget_cap: int, s_star: float | None), computed fresh for
     THIS grid point's env/N. `type: fixed` needs no s* (returns None for it).
+
+    `budget_multiplier` (default 1.0, backward compatible) scales the
+    resolved budget_cap AFTER the formula/fixed value but BEFORE the
+    SMOKE_TEST ceiling below -- e.g. `budget_multiplier=0.25` for Exp 1's
+    restricted-budget figure (docs/experiments.md, "how well do these
+    methods degrade when queries are scarce"). `s_star` itself is NOT
+    rescaled: it is a property of the instance, not of how much budget this
+    particular pass is choosing to spend.
 
     Under SMOKE_TEST only, the result is additionally capped at
     SMOKE_TEST_MAX_BUDGET_CAP. This is NOT a faithful reduced-scale
@@ -202,6 +278,8 @@ def _resolve_budget_cap(budget_cap_cfg: dict, N: int, delta: float, env, rng: np
     else:
         raise ValueError(f"unknown budget_cap type: {cfg_type!r}")
 
+    budget_cap = int(math.ceil(budget_cap * budget_multiplier))
+
     if SMOKE_TEST and budget_cap > SMOKE_TEST_MAX_BUDGET_CAP:
         budget_cap = SMOKE_TEST_MAX_BUDGET_CAP
     return budget_cap, s_star
@@ -220,20 +298,27 @@ def _run_one(
     budget_cap: int,
     s_star: float | None,
     delta: float,
+    budget_multiplier: float = 1.0,
 ) -> dict:
     fit_fn = ALGORITHMS[algo_id]
     rng = np.random.default_rng(seed)
 
     t0 = time.time()
-    if algo_id == "kabc-oracle":
-        if s_star is None:
-            raise ValueError(
-                f"kabc-oracle requires a s_star_formula budget_cap; family {family!r} uses "
-                f"a fixed budget_cap, so no s* was computed"
-            )
-        result = fit_fn(env, delta, budget_cap, rng, s_star_sq=s_star**2)
-    else:
-        result = fit_fn(env, delta, budget_cap, rng)
+    # threadpool_limits(1): belt-and-suspenders alongside the module-level
+    # BLAS env vars above -- applies even if some BLAS backend was already
+    # initialized (with its own thread count baked in) before those env vars
+    # could take effect in this process, which the env-var approach alone
+    # can't guarantee against.
+    with threadpoolctl.threadpool_limits(limits=1):
+        if algo_id == "kabc-oracle":
+            if s_star is None:
+                raise ValueError(
+                    f"kabc-oracle requires a s_star_formula budget_cap; family {family!r} uses "
+                    f"a fixed budget_cap, so no s* was computed"
+                )
+            result = fit_fn(env, delta, budget_cap, rng, s_star_sq=s_star**2)
+        else:
+            result = fit_fn(env, delta, budget_cap, rng)
     wall_clock_seconds = time.time() - t0
 
     row = {
@@ -245,6 +330,7 @@ def _run_one(
         "swept_param": swept_param,
         "swept_value": swept_value,
         "budget_cap": budget_cap,
+        "budget_multiplier": budget_multiplier,
         "s_star": s_star,
         "tau": result.tau,
         "stopped": result.stopped,
@@ -277,7 +363,20 @@ def run_experiment(config_path: str) -> pd.DataFrame:
             f"instance size capped (N<={SMOKE_TEST_MAX_N} or equivalent)"
         )
 
-    work_items = []
+    # Grid points are collected first (cheap: just resolved kwargs/budget_cap,
+    # no algorithm runs yet), THEN executed one grid point at a time below --
+    # not one giant flattened work_items list run through a single Parallel()
+    # call. A single-call design silently held everything in memory and wrote
+    # results.parquet exactly once at the very end: for a real (non-smoke)
+    # Exp 1 run (26 grid points x 4 algorithms x 100 reps = 10,400 runs) that
+    # meant multi-hour runs with ZERO progress visibility and no partial
+    # output to inspect if something needed investigating mid-run. Per-grid-
+    # point execution below writes (overwrites, from the full accumulated
+    # row list so far) results.parquet after EVERY grid point, and prints a
+    # one-line progress update -- so `results/expN/results.parquet` always
+    # reflects real, current progress, and a mid-run check no longer requires
+    # killing the process to find out how far along it is.
+    grid_points = []
     grid_point_index = 0
 
     for family_cfg in config["instances"]:
@@ -286,48 +385,86 @@ def run_experiment(config_path: str) -> pd.DataFrame:
             family_cfg = _apply_smoke_test(family_cfg)
         env_cls = ENVIRONMENTS[family]
 
+        # budget_multipliers: crossed with EVERY (swept_param, swept_value)
+        # grid point below -- not folded into `sweeps` above, since sweeps
+        # are one-knob-at-a-time (varying budget_multiplier there would only
+        # touch `base`, not all of Delta/d/N's points). Default [1.0] when a
+        # family omits the field, so exp2/exp3 (which don't set it) produce
+        # EXACTLY the same grid/indexing/output as before this was added --
+        # this is the backward-compatibility contract; see the smoke-test
+        # diff check in docs/experiments.md's Exp 1 restricted-budget note.
+        budget_multipliers = family_cfg.get("budget_multipliers") or [1.0]
+
         for swept_param, swept_value, resolved_kwargs in _expand_grid(family_cfg):
             if SMOKE_TEST:
                 resolved_kwargs = _smoke_shrink_kwargs(family, resolved_kwargs)
             env = env_cls(**resolved_kwargs)
             N = env.n_arms
 
-            cap_rng = np.random.default_rng(CAP_SEED_OFFSET + exp_id * 100_000 + grid_point_index)
-            grid_point_index += 1
-            budget_cap, s_star = _resolve_budget_cap(family_cfg["budget_cap"], N, delta, env, cap_rng)
+            for budget_multiplier in budget_multipliers:
+                cap_rng = np.random.default_rng(CAP_SEED_OFFSET + exp_id * 100_000 + grid_point_index)
+                grid_point_index += 1
+                budget_cap, s_star = _resolve_budget_cap(
+                    family_cfg["budget_cap"], N, delta, env, cap_rng, budget_multiplier
+                )
 
-            for algo_entry in family_cfg["algorithms"]:
-                algo_id = algo_entry["id"]
-                reps = reps_overrides.get(algo_id, default_reps)
-                for rep in range(reps):
-                    seed = seed_multiplier * exp_id + rep
-                    work_items.append(
-                        dict(
-                            exp_id=exp_id,
-                            family=family,
-                            swept_param=swept_param,
-                            swept_value=swept_value,
-                            resolved_kwargs=resolved_kwargs,
-                            algo_id=algo_id,
-                            rep=rep,
-                            seed=seed,
-                            env=env,
-                            budget_cap=budget_cap,
-                            s_star=s_star,
-                            delta=delta,
+                work_items = []
+                for algo_entry in family_cfg["algorithms"]:
+                    algo_id = algo_entry["id"]
+                    reps = reps_overrides.get(algo_id, default_reps)
+                    for rep in range(reps):
+                        seed = seed_multiplier * exp_id + rep
+                        work_items.append(
+                            dict(
+                                exp_id=exp_id,
+                                family=family,
+                                swept_param=swept_param,
+                                swept_value=swept_value,
+                                resolved_kwargs=resolved_kwargs,
+                                algo_id=algo_id,
+                                rep=rep,
+                                seed=seed,
+                                env=env,
+                                budget_cap=budget_cap,
+                                s_star=s_star,
+                                delta=delta,
+                                budget_multiplier=budget_multiplier,
+                            )
                         )
+                grid_points.append(
+                    dict(
+                        family=family, swept_param=swept_param, swept_value=swept_value,
+                        budget_multiplier=budget_multiplier, work_items=work_items,
                     )
+                )
 
-    print(f"exp{exp_id}: {len(work_items)} (grid point, algorithm, rep) runs to execute")
-    rows = Parallel(n_jobs=-2)(delayed(_run_one)(**item) for item in work_items)
+    total_runs = sum(len(gp["work_items"]) for gp in grid_points)
+    print(f"exp{exp_id}: {len(grid_points)} grid points, {total_runs} (grid point, algorithm, rep) runs total")
 
-    df = pd.DataFrame(rows)
     out_dir = Path(f"results/exp{exp_id}")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "results.parquet"
-    df.to_parquet(out_path, index=False)
-    print(f"Wrote {len(df)} rows to {out_path}")
-    return df
+
+    all_rows: list[dict] = []
+    run_start = time.time()
+    for i, gp in enumerate(grid_points, start=1):
+        rows = Parallel(n_jobs=-2)(delayed(_run_one)(**item) for item in gp["work_items"])
+        all_rows.extend(rows)
+
+        df = pd.DataFrame(all_rows)
+        df.to_parquet(out_path, index=False)
+
+        elapsed = time.time() - run_start
+        print(
+            f"exp{exp_id}: grid point {i}/{len(grid_points)} done "
+            f"(family={gp['family']!r}, swept_param={gp['swept_param']!r}, swept_value={gp['swept_value']!r}, "
+            f"budget_multiplier={gp['budget_multiplier']}) -- {len(all_rows)}/{total_runs} rows so far, "
+            f"elapsed={elapsed:.1f}s",
+            flush=True,
+        )
+
+    print(f"Wrote {len(all_rows)} rows to {out_path}")
+    return pd.DataFrame(all_rows)
 
 
 def main() -> None:
