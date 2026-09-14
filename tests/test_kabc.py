@@ -9,6 +9,7 @@ from kabc.algorithms.kabc import (
     MEMORY_GUARD_SAFETY_FACTOR,
     N_PILOT,
     STOP_REASON_BUDGET_CAP,
+    STOP_REASON_DEGENERATE_PILOT,
     STOP_REASON_MAX_ITERATIONS,
     STOP_REASON_MEMORY_GUARD,
     _check_memory_guard,
@@ -19,6 +20,41 @@ from kabc.algorithms.kabc import (
 )
 from kabc.environments import GaussianMixtureEnv
 from kabc.thresholds import iteration_budget, iteration_confidence
+
+
+class _MostlyTiedEnv:
+    """Test double: N-1 arms always pull an identical value, one arm pulls a
+    different (but still identical-across-its-own-pulls) value. Engineered
+    so the pooled pilot sample's MEDIAN pairwise distance is exactly zero
+    (a majority of pairs are tied-value pairs) while the MEAN is not (a
+    minority of pairs cross the two values) -- reproducing the real
+    Experiment 4 incident (Schindler's List vs Rear Window: a small pilot
+    sample from two highly-rated, low-variance movies drew mostly 4s/5s by
+    chance) at a scale small enough for a deterministic unit test.
+    """
+
+    def __init__(self, N: int, K: int = 3):
+        self.n_arms = N
+        self.K = K
+        self.true_partition = np.zeros(N, dtype=int)
+
+    def pull(self, arm_index: int, rng: np.random.Generator) -> float:
+        return 3.0 if arm_index == 0 else 5.0
+
+
+class _FullyDegenerateEnv:
+    """Test double: EVERY arm always pulls the identical value -- both the
+    median AND mean pairwise pilot distance are zero, so no bandwidth is
+    recoverable from this data at all (unlike _MostlyTiedEnv above, where
+    the mean fallback succeeds)."""
+
+    def __init__(self, N: int, K: int = 3):
+        self.n_arms = N
+        self.K = K
+        self.true_partition = np.zeros(N, dtype=int)
+
+    def pull(self, arm_index: int, rng: np.random.Generator) -> float:
+        return 5.0
 
 
 # --------------------------------------------------------------------------
@@ -87,6 +123,42 @@ def test_stops_gracefully_when_cap_forbids_even_first_iteration():
     assert result.tau == pilot_cost
     assert result.partition.shape == (N,)
     # best-effort fallback: no iteration ran, so all arms are reported as one cluster
+    assert np.all(result.partition == result.partition[0])
+
+
+def test_degenerate_pilot_bandwidth_falls_back_to_mean_and_still_converges():
+    # Real incident (Experiment 4): a small pilot sample from two low-variance
+    # movies drew mostly one rating value by chance, making the MEDIAN
+    # pairwise pilot distance zero even though the data has real (if rare)
+    # spread. This must fall back to the mean pairwise distance and proceed
+    # normally, not raise -- see kernels.median_heuristic_bandwidth's
+    # on_degenerate="mean" and kabc.py's _pilot_or_graceful_stop.
+    env = _MostlyTiedEnv(N=12, K=3)
+    rng = np.random.default_rng(0)
+    with pytest.warns(UserWarning, match="fell back to the mean pairwise distance"):
+        result = fit(env, delta=0.05, budget_cap=50_000, rng=rng)
+    # Recovers a real bandwidth and keeps going -- not the graceful
+    # degenerate-pilot stop (that path is for when even the mean fails).
+    assert result.history[-1].get("stop_reason") != STOP_REASON_DEGENERATE_PILOT
+
+
+def test_stop_reason_is_degenerate_pilot_when_mean_fallback_also_fails():
+    # Every pooled pilot sample is identical -- no bandwidth is recoverable
+    # from this data at all, even with the mean-distance backup. Must
+    # degrade gracefully (stopped=False, a distinctly labeled stop_reason),
+    # never raise and crash the caller's run.
+    env = _FullyDegenerateEnv(N=12, K=3)
+    N = env.n_arms
+    pilot_cost = N * N_PILOT
+    rng = np.random.default_rng(0)
+
+    with pytest.warns(UserWarning, match="only the pilot phase completed"):
+        result = fit(env, delta=0.05, budget_cap=50_000, rng=rng)
+
+    assert result.stopped is False
+    assert result.history == [{"stop_reason": STOP_REASON_DEGENERATE_PILOT}]
+    assert result.tau == pilot_cost
+    assert result.partition.shape == (N,)
     assert np.all(result.partition == result.partition[0])
 
 

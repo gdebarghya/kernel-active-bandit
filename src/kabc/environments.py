@@ -249,6 +249,30 @@ def _prototype_bandwidth(
     return median_heuristic_bandwidth(pooled)
 
 
+def compute_pairwise_mmd2(movie_probs: dict[int, np.ndarray], bandwidth: float) -> tuple[list[int], np.ndarray]:
+    """Pairwise MMD^2 between every pair of movies' empirical rating
+    distributions, via the RBF Gram matrix on the discrete rating support
+    {1,...,5} -- algebraically identical to kernels.mmd2_plugin on the raw
+    rating samples (grouping the double sum over samples by rating value),
+    but O(1) per pair instead of O(n^2), needed since all pairs among
+    hundreds of candidate movies are considered (Experiment 3's prototype
+    selection, Experiment 4's per-rep pair sampling).
+
+    Returns (movie_ids in row/column order, the (M,M) MMD^2 matrix; diagonal
+    set to -inf since a movie's MMD^2 to itself is never a meaningful
+    candidate answer).
+    """
+    movie_ids = list(movie_probs.keys())
+    P = np.stack([movie_probs[mid] for mid in movie_ids])  # (M, 5)
+
+    K_vv = rbf_kernel(_RATING_SUPPORT, bandwidth=bandwidth)  # (5, 5)
+    self_term = np.einsum("ma,ab,mb->m", P, K_vv, P)
+    cross_term = P @ K_vv @ P.T
+    mmd2 = self_term[:, None] + self_term[None, :] - 2.0 * cross_term
+    np.fill_diagonal(mmd2, -np.inf)
+    return movie_ids, mmd2
+
+
 def _select_prototypes(
     movie_probs: dict[int, np.ndarray],
     movie_means: dict[int, float],
@@ -256,27 +280,12 @@ def _select_prototypes(
     mean_gap_tol: float,
     bandwidth: float,
 ) -> list[int]:
-    """Exp 3 steps 2-3: pick K movie prototypes.
-
-    MMD^2 between two movies is computed from their 5-bin rating distributions
-    via the RBF Gram matrix on the discrete support {1,...,5} -- algebraically
-    identical to kernels.mmd2_plugin on the raw rating samples (grouping the
-    double sum over samples by rating value), but O(1) per pair instead of
-    O(n^2), needed since all pairs among hundreds of candidate movies are
-    considered.
-    """
+    """Exp 3 steps 2-3: pick K movie prototypes."""
     if K < 2:
         raise ValueError(f"K must be >= 2 (need at least the polarizing-vs-consensus pair), got {K!r}")
 
-    movie_ids = list(movie_probs.keys())
-    P = np.stack([movie_probs[mid] for mid in movie_ids])  # (M, 5)
+    movie_ids, mmd2 = compute_pairwise_mmd2(movie_probs, bandwidth)
     means = np.array([movie_means[mid] for mid in movie_ids])  # (M,)
-
-    K_vv = rbf_kernel(_RATING_SUPPORT, bandwidth=bandwidth)  # (5, 5)
-    self_term = np.einsum("ma,ab,mb->m", P, K_vv, P)
-    cross_term = P @ K_vv @ P.T
-    mmd2 = self_term[:, None] + self_term[None, :] - 2.0 * cross_term
-    np.fill_diagonal(mmd2, -np.inf)
 
     mean_gap = np.abs(means[:, None] - means[None, :])
     eligible_mmd2 = np.where(mean_gap <= mean_gap_tol, mmd2, -np.inf)
@@ -347,6 +356,40 @@ class MovieLensEnv(Environment):
             ratings.loc[ratings["movie_id"] == mid, "rating"].to_numpy(dtype=float)
             for mid in prototype_movie_ids
         ]
+
+    def pull(self, arm_index: int, rng: np.random.Generator) -> float:
+        cluster = self._validate_arm_index(arm_index)
+        return float(rng.choice(self.prototype_pools[cluster]))
+
+
+class MovieLensPairEnv(Environment):
+    """Exp 4: a single, arbitrary movie pair (K=2), not MovieLensEnv's
+    greedy K-prototype selection. Takes rating pools directly rather than
+    loading/filtering ratings.dat itself -- Experiment 4 samples a fresh
+    pair every rep from a pre-loaded 207-movie table
+    (`scripts/build_movielens_207.py`'s `data/ml-1m-207/`), so pool lookup
+    happens once at setup, not per rep.
+    """
+
+    def __init__(
+        self,
+        pool_a: np.ndarray,
+        pool_b: np.ndarray,
+        arms_per_prototype: int,
+        movie_id_a: int,
+        movie_id_b: int,
+        title_a: str,
+        title_b: str,
+    ):
+        self.K = 2
+        self.arms_per_prototype = arms_per_prototype
+        self.n_arms = 2 * arms_per_prototype
+        self.true_partition = _balanced_partition(self.n_arms, 2)
+        self.movie_id_a = movie_id_a
+        self.movie_id_b = movie_id_b
+        self.title_a = title_a
+        self.title_b = title_b
+        self.prototype_pools = [pool_a, pool_b]
 
     def pull(self, arm_index: int, rng: np.random.Generator) -> float:
         cluster = self._validate_arm_index(arm_index)

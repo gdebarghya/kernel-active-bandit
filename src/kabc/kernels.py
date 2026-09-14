@@ -10,6 +10,8 @@ rather than recomputing on every pull.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from scipy.spatial.distance import pdist
 from sklearn.metrics.pairwise import rbf_kernel as _sklearn_rbf_kernel
@@ -47,25 +49,65 @@ def rbf_kernel(X: np.ndarray, Y: np.ndarray | None = None, bandwidth: float = 1.
     return _sklearn_rbf_kernel(X, Y, gamma=gamma)
 
 
-def median_heuristic_bandwidth(X: np.ndarray) -> float:
+def median_heuristic_bandwidth(X: np.ndarray, on_degenerate: str = "raise", warn_on_fallback: bool = False) -> float:
     """Median-heuristic RBF bandwidth from a pooled (pilot) sample.
 
     Returns the median of all pairwise Euclidean distances in X (excluding
     self-pairs), used directly as `bandwidth` (sigma) in `rbf_kernel`.
+
+    `on_degenerate` controls behavior when the MEDIAN pairwise distance is
+    (numerically) zero -- i.e. more than half of all pairs are exactly tied.
+    Real discrete data can trigger this even when the underlying population
+    has genuine spread: e.g. a small pilot sample from a highly-rated
+    MovieLens movie can draw mostly 4s/5s by chance (the low ratings are
+    rare, not absent), giving a pooled sample dominated by one tied value.
+    - `"raise"` (default): original behavior, preserved for every existing
+      caller unless they opt in otherwise.
+    - `"mean"`: fall back to the MEAN pairwise distance instead. The mean
+      stays informative even when a MAJORITY of pairs are tied (unlike the
+      median, which only needs >50% zero pairs to collapse) -- it only
+      raises if the mean is ALSO (numerically) zero, meaning every pooled
+      sample is identical and no bandwidth is recoverable from this data at
+      all.
+
+    `warn_on_fallback`: if True, emits a UserWarning when the `"mean"`
+    fallback actually triggers (never when the median succeeds normally),
+    so a caller relying on the backup path stays visible/traceable in logs
+    rather than silently changing behavior -- matching this repo's existing
+    convention for other graceful-degradation paths (e.g.
+    `kabc.py`'s `_pilot_or_graceful_stop` budget-too-tight warning).
     """
     X = _as_2d(X)
     n = X.shape[0]
     if n < 2:
         raise ValueError(f"median_heuristic_bandwidth requires at least 2 pooled samples, got {n}")
+    if on_degenerate not in ("raise", "mean"):
+        raise ValueError(f"on_degenerate must be 'raise' or 'mean', got {on_degenerate!r}")
     distances = pdist(X, metric="euclidean")
     median = float(np.median(distances))
-    if median < 1e-12:
+    if median >= 1e-12:
+        return median
+    if on_degenerate == "raise":
         raise ValueError(
             "median pairwise distance is (numerically) zero; pooled pilot sample "
             "appears degenerate (duplicate/identical points) — cannot set an RBF "
             "bandwidth from it"
         )
-    return median
+    mean = float(np.mean(distances))
+    if mean < 1e-12:
+        raise ValueError(
+            "median AND mean pairwise distance are both (numerically) zero; "
+            "every pooled sample is identical — no bandwidth is recoverable "
+            "from this data at all"
+        )
+    if warn_on_fallback:
+        warnings.warn(
+            f"median pairwise distance was (numerically) zero (pooled sample "
+            f"dominated by tied values); fell back to the mean pairwise "
+            f"distance ({mean:.6g}) as the bandwidth instead of raising",
+            stacklevel=2,
+        )
+    return mean
 
 
 def _gram_matrices(X: np.ndarray, Y: np.ndarray, bandwidth: float):

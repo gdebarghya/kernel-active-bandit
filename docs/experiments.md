@@ -137,6 +137,19 @@ compute budget). Implemented instead:
   (nothing hangs indefinitely or risks OOM) -- they do NOT make the
   near-`LO=0.01` region fast OR numerically meaningful, which is why `LO`
   was raised regardless of the safeguards existing.
+- **A fourth stop reason, `"degenerate_pilot"`, added later (during
+  Experiment 4's real run)** for a distinct failure mode found in the pilot
+  phase itself, not the doubling loop: `median_heuristic_bandwidth` can
+  receive a pilot sample whose pairwise distances are all (numerically)
+  zero, most often on real discrete data with a skewed rating distribution
+  (a small pilot draw sampling only tied high-rating values by chance from a
+  movie's real pool). It now falls back to the MEAN pairwise distance first
+  (`on_degenerate="mean"`, with a `UserWarning` on trigger) -- still
+  informative unless literally every pooled sample is identical -- and only
+  then, if the mean is ALSO zero, does `_pilot_or_graceful_stop` return
+  `Result(stopped=False, history=[{"stop_reason": "degenerate_pilot"}])`
+  instead of raising. See `docs/results_exp1_exp3.tex`'s Experiment 4 setup
+  section for the concrete crash this fixed.
 
 This is a real, documented deviation from the protocol as literally stated
 above, not a silent substitution -- `configs/calibration.yaml`'s header
@@ -382,6 +395,340 @@ count. See configs/exp3.yaml.
 **Expected outcome:** acb cannot separate the same-mean pair → ARI plateau ~
 (K-2 correct clusters + merged pair); kabc exact recovery; tas-fw competitive on
 the tiny instance but orders of magnitude more compute per decision.
+
+---
+
+## Experiment 4 — MovieLens random pairs: robustness across the real-data pair distribution
+
+**Claim tested:** Experiment 3 uses one fixed, cherry-picked K=4 MovieLens instance.
+Experiment 4 asks whether KABC's advantage (and ACB's/TaS-FW's relative behavior)
+is an artifact of that one instance, or holds up when the movie PAIR is randomly
+resampled every rep across the real diversity of the MovieLens catalog, under
+three distinct pairing regimes that vary how much mean separation is present
+and whether B is cherry-picked (max MMD²) or sampled uniformly.
+
+**Data.** `data/ml-1m-207/` (`ratings.parquet`, `movies.parquet`) — the 207
+MovieLens-1M movies with ≥ 1000 ratings, pre-filtered by
+`scripts/build_movielens_207.py` so per-rep pair sampling doesn't re-load/re-filter
+the full ~1M-row `ratings.dat` every time. `movies.parquet` carries
+`movie_id, title, n_ratings, mean_rating`; `ratings.parquet` carries the raw
+per-movie ratings needed to build each rep's environment. Same discrete
+rating support {1..5} and RBF-on-ratings kernel as Experiment 3, with the
+same fixed median-heuristic bandwidth computed once over the full 207-movie
+pool (bandwidth = 1.0, matching Experiment 3 — not recomputed per pair).
+
+**REVISION HISTORY (this section has been revised twice, after a real
+5-rep-per-version smoke test on the original 3-version/7-algorithm-row
+design surfaced several findings that motivated the changes below — kept
+here rather than silently overwritten, since the smoke-test findings that
+motivated each change are real evidence, not speculation):**
+- **Revision 1:** `unif-kkm-full` (the fixed-`budget_cap` variant) DROPPED:
+  it reached ARI ≈ 1.0 in nearly every observed case (generous budget, no
+  adaptivity required to eventually separate a K=2/N=10 instance), so it
+  wasn't discriminating between anything --- confirmed uninteresting rather
+  than assumed. Only `unif-kkm-1x`/`unif-kkm-2x` remain (6 algorithm rows
+  now: kabc, kabc-sg, acb, tas-fw, unif-kkm-1x, unif-kkm-2x).
+  `budget_cap` raised from 10000 to **20000**: kabc's smoke-test failures
+  (falling back to the ungraceful trivial-partition answer, see "ARI is
+  exactly 0.0, never negative" below) may in some cases just need more
+  budget, and 20000 was the ORIGINAL value before an earlier reduction made
+  purely to bound tas-fw's worst case --- that tas-fw cost concern is now
+  handled by capping N at 10 (see "Why N cannot grow" below), not by
+  shrinking `budget_cap`. `exp4_1`'s `mean_gap_tol` raised from 0.05 to
+  **0.1** (still the argmax-MMD² rule, unchanged). `exp4_2` redefined from a
+  single one-sided threshold (`gap > 0.2`) to a RANGE (`0.1 ≤ gap ≤ 0.5`),
+  still uniform B-selection, no longer framed as "favors acb" --- the smoke
+  test showed acb struggling there too (mean ARI 0.12 over 5 reps, only 20%
+  ever stopping); the honest framing is "easier due to mean separation
+  existing at all," not "a regime any specific algorithm owns."
+- **Revision 1 also DROPPED `exp4_3`** (loose same-mean gap at
+  `mean_gap_tol=0.1`, uniform B-selection): the smoke test showed it was
+  uniformly hard --- kabc, kabc-sg, acb, AND tas-fw all struggled on its
+  sampled pairs (mostly landing on the ARI-exactly-0.0 fallback, see below)
+  --- so it looked like it would mostly re-confirm that same difficulty
+  rather than add new signal, at real cost (tas-fw alone averages minutes
+  per rep).
+- **Revision 2 RE-ADDED `exp4_3`**, after weighing what dropping it actually
+  cost: `exp4_1` (tight gap + argmax-MMD²) vs. the original `exp4_3` (SAME
+  tight gap + uniform) was the only comparison in this design that isolated
+  whether kabc's `exp4_1` advantage comes from the tight mean-gap itself or
+  specifically from the MMD-maximizing cherry-pick --- losing `exp4_3`
+  loses that ablation entirely. Rather than restore it at the same
+  `mean_gap_tol=0.1` (which produced total ARI=0.0 degeneracy for kabc on
+  every sampled pair in the smoke test --- no signal at all to compare
+  against), `exp4_3` returns with `mean_gap_tol` LOOSENED to **0.2**: still
+  uniform B-selection (no cherry-picking), still same-mean-ish, but with
+  enough real separation that kabc should show ARI somewhere between total
+  failure and success rather than flooring out at exactly 0.0 every time.
+  This means `exp4_1` vs. `exp4_3` is no longer a perfectly clean
+  gap-held-fixed ablation (0.1 vs. 0.2, not 0.1 vs. 0.1) --- an accepted
+  trade-off for actually getting a usable signal out of `exp4_3`, made
+  explicitly rather than silently.
+
+**Why N cannot realistically grow past 8-10: tas-fw's cost.** tas-fw's
+Track-and-Stop design re-scans its ENTIRE hypothesis space (|C|, the number
+of ways to split N arms into K blocks of size ≥ 2) AND re-solves a linear
+program at EVERY single pull, not periodically like kabc's doubling trick.
+This makes it slow even at trivial scale: at Experiment 3's N=6/K=3 reduced
+instance (|C|=90), tas-fw was already ~172x slower than kabc per rep (39.64s
+vs 0.23s) despite matching kabc's accuracy exactly (ARI 1.000 vs 0.995). At
+N=10/K=2 (|C|=501, ~5.6x larger), the smoke test measured tas-fw averaging
+~900-1300s/rep whenever it failed to converge within `budget_cap`. The real
+N=8/K=2 run (final config, |C| smaller than N=10's) confirmed the same
+order of magnitude in practice: mean wall-clock 789-908s/rep across all
+three versions, two to three orders of magnitude slower than every other
+algorithm (all under ~2.1s/rep) --- see `docs/results_exp1_exp3.tex`'s
+§6.14. Since |C| grows combinatorially in N (not polynomially), and tas-fw's
+use in this experiment specifically exists to give a fair,
+finite-alphabet-respecting baseline, N=8-10 is treated as close to the
+practical ceiling for including tas-fw at all; a larger N would need either
+dropping tas-fw from Experiment 4 entirely or accepting per-rep costs an
+order of magnitude beyond what is already a bottleneck.
+
+**Smoke-test findings worth carrying forward (from the now-superseded
+3-version/7-row design, still valid evidence about algorithm behavior):**
+- **ARI is exactly 0.0 for certain failure modes, never negative, and this
+  is a real mathematical property, not noise.** Verified directly: ARI CAN
+  go negative in general (a maximally scrambled alternating partition
+  against the true 5-5 split gives ARI=-0.08). But kabc's/acb's graceful
+  degradation fallback --- the trivial "everyone in one cluster" answer
+  returned when budget runs out without enough evidence to split --- gives
+  EXACTLY ARI=0.0 against any true partition, always, by construction of
+  the adjusted-for-chance formula (a degenerate single-cluster partition
+  makes the observed and expected agreement coincide). kabc-sg's near-
+  degenerate 9-1 splits (see next point) also landed at exactly 0.0 in
+  every case checked, for the same underlying reason (a singleton cluster
+  contributes zero same-cluster pairs).
+- **kabc-sg's fragility (see "Restricted budget" and Experiment 2's
+  calibration-generalization findings) reproduces here in a new form: not
+  just failure to converge, but CONFIDENT convergence to a wrong answer.**
+  On the smoke test's hardest sampled pairs, kabc (correctly) fell back to
+  the graceful "everyone in one cluster" non-answer (`stopped=False`) ---
+  but kabc-sg instead `stopped=True` on a near-degenerate 9-1 split (one
+  arm isolated as its own "cluster") every single time on those pairs. This
+  is a materially different, and worse, failure mode: an honest "I don't
+  know" (kabc) vs. a confidently wrong answer (kabc-sg) that happens to
+  score the same ARI=0.0 by coincidence of the two partitions' size
+  profiles. Any future ARI-only comparison should be read alongside
+  `stopped` for exactly this reason.
+
+**REVISION 3 (post-real-run): N reduced to 8, reps to 50 (40 completed
+excluding one permanently-skipped rep), and a real bandwidth-selection
+crash was found and fixed.** The N=10 pilot's timing extrapolation (tas-fw
+~900-1300s/rep) made a 100-rep run impractically long; N was reduced to 8
+(`arms_per_prototype=4`) to keep tas-fw's per-rep cost and total wall-clock
+bounded, and reps to 50. Mid-run, `median_heuristic_bandwidth`'s pilot-phase
+call raised `ValueError` on a genuinely pathological pair (Schindler's List
+vs. Rear Window: both extremely skewed toward high ratings, and a 5-per-arm
+pilot draw sampled only tied {3,4,5} values by chance), killing the whole
+`Parallel(return_as="generator")` batch and losing all in-flight work for
+that batch (already-completed reps were safe, having been written after
+each prior rep). Fixed at the source (`src/kabc/kernels.py`,
+`src/kabc/algorithms/kabc.py`), not worked around in `run_experiment4.py`:
+`median_heuristic_bandwidth` now accepts `on_degenerate="mean"`, falling
+back to the mean pairwise distance (still informative unless *every* pair is
+tied) before raising, and `_pilot_or_graceful_stop` uses this fallback with
+a `UserWarning` on trigger; if the mean is *also* degenerate, KABC now stops
+gracefully (`STOP_REASON_DEGENERATE_PILOT`, `stopped=False`) rather than
+crashing, matching the existing budget-cap/memory-guard graceful-stop
+convention. Verified directly against the exact crash case (rep 38,
+exp4_1): KABC now converges correctly instead of crashing. One rep (38)
+remains permanently absent from the final dataset --- it was skipped (not
+re-run) under the pre-fix "just resume" decision, before the fix existed;
+revisiting whether to backfill it is a decision for a future session, not
+done here. Final dataset: 40 reps/algorithm/version (0-37, 39-49), 240 rows
+per version file. Results and per-version summary stats are in
+`docs/results_exp1_exp3.tex`'s "Results --- Experiment 4" section (compiled
+PDF), not duplicated here.
+
+**Common setup, all three versions:**
+- N = 8 arms, K = 2 clusters, `arms_per_prototype = 4` (reduced from the
+  original N=10/`arms_per_prototype=5` design below --- see Revision 3).
+- Algorithms: kabc, kabc-sg, acb, tas-fw, unif-kkm-1x, unif-kkm-2x --- 6
+  algorithm rows per (rep, version). 50 reps configured (40 completed, see
+  Revision 3) for every algorithm including tas-fw.
+- `budget_cap`: fixed at **20000** (see revision history above). Not the
+  `s_star_formula` type used elsewhere --- a formula-derived cap isn't
+  meaningful at this scale.
+- δ = 0.05, matching every other experiment.
+- Calibrated `c_cal` constants are REUSED from the existing frozen
+  `configs/calibration.yaml` (kabc, kabc-sg, acb) --- no new calibration pass
+  for Experiment 4, per the "calibrate once, reuse everywhere" protocol
+  (section 0.2). Flagged here explicitly since Experiment 4's instance family
+  (random MovieLens pairs) is distributionally different from what those
+  constants were calibrated against (Experiment 1's `gaussian_mixture`); if
+  results look miscalibrated (e.g. kabc-sg error far above δ/2, the same
+  failure mode already documented for Experiment 2 in section 0.2), that is
+  a finding to report, not a bug to silently patch by re-tuning here.
+- Reported per algorithm per version: mean AND standard deviation of τ, ARI,
+  and wall-clock/rep. Visualized as bar plots (bar height = mean, error bar =
+  std dev): one bar plot per metric (ARI, τ, wall-clock), each with 3 sets
+  (one per version) of 6 bars (one per algorithm) --- 18 bars per plot.
+- **Architecture note:** unlike Experiments 1-3, EVERY rep here builds a
+  fresh environment (a new random movie pair), not just fresh pull-noise
+  against one fixed environment built once per grid point. This does not fit
+  `run_experiment.py`'s existing per-grid-point loop (build env once, reuse
+  across reps), so Experiment 4 is implemented as a separate, dedicated
+  script (`scripts/run_experiment4.py` + `configs/exp4.yaml`) rather than by
+  extending the shared grid engine.
+- **Parallelization: across REPS, not across (version, algorithm) work
+  items within a rep.** `Parallel(n_jobs=10, return_as="generator")` runs
+  `process_one_rep(rep, ...)` for each of the 100 reps, 10 at a time; INSIDE
+  one call, all three versions and all 6 algorithm-rows-per-version run
+  SEQUENTIALLY in a single worker process (not further parallelized). This
+  resolves the unif-kkm budget dependency below for free (kabc just runs
+  first in the same worker) and load-balances tas-fw-heavy vs. cheap reps
+  across workers by chance, rather than gating every rep's wall-clock on
+  its slowest algorithm.
+  `return_as="generator"` (joblib >= 1.3, confirmed available: 1.6.0
+  installed) yields each rep's results back to the MAIN process as soon as
+  that rep finishes --- reps complete OUT OF ORDER across the 10 workers, so
+  progress is tracked by a completed-count, not by rep index order.
+  **Writer safety:** workers never touch the filesystem --- `process_one_rep`
+  computes entirely in-memory and returns that rep's rows; only the MAIN
+  process (iterating the generator) calls `to_parquet(...)`, always
+  sequentially, one rep's results at a time. Exactly one writer, same as
+  `run_experiment.py`'s worker-computes/main-process-writes pattern --- no
+  concurrent-write risk.
+- **Progress visibility, two granularities:** (1) the MAIN process prints
+  progress after EVERY rep as its results stream back from the generator:
+  `"{n}/100 reps done, elapsed={t}s"` (n = completed-count, not necessarily
+  rep index), and incrementally rewrites each of the 3 output parquets after
+  each rep. (2) EACH WORKER also prints after every individual algorithm
+  call it completes (`"rep {r} {version}/{algo}: tau=... stopped=...
+  time=...s"`), giving live visibility into what all `n_jobs` workers are
+  doing concurrently --- this relies on loky worker stdout being inherited
+  by the main process when the whole script's output is redirected to a
+  file (the same mechanism that already surfaces workers' own UserWarnings
+  in `run_experiment.py`'s logs).
+- **Rollout order:** smoke test first, then a real but SHORT run at
+  real budget/uncontended CPU (ideally exactly `n_jobs` reps, so each
+  worker handles exactly 1 rep --- the cleanest possible per-rep timing
+  read, extrapolated by simply multiplying by reps-per-worker for the full
+  run) before committing to the full 100-rep run.
+
+**unif-kkm variants: TWO.** unif-kkm is non-adaptive and always spends
+whatever budget it's given in one shot (`fit(env, delta, budget_cap, rng)`
+--- see `baselines.py`'s docstring: n = budget_cap // N pulls/arm, always).
+Passing it a smaller `budget_cap` than the full 20000 is already exactly the
+built-in mechanism for "give it fewer samples" --- no code change to
+`baselines.py` needed, only to how Experiment 4 calls it:
+- **unif-kkm-1x** --- `budget_cap` = min(τ_kabc, 20000) for that SAME
+  (rep, version)'s kabc run. The sharpest comparison: identical total budget
+  to kabc, isolating whether active/adaptive arm selection helps AT ALL,
+  independent of how much budget is spent.
+- **unif-kkm-2x** --- `budget_cap` = min(2·τ_kabc, 20000). A modest handicap
+  in unif-kkm's favor, testing how much of an edge uniform sampling needs to
+  close the gap.
+Since 1x/2x need that rep+version's own kabc τ, kabc MUST run before either
+unif-kkm variant for that (rep, version) --- resolved for free by running
+algorithms sequentially within one rep's worker (kabc first). Edge case: if
+kabc doesn't converge (`stopped=False`, hit `budget_cap` or the memory
+guard), τ_kabc ≈ `budget_cap`, so unif-kkm-1x/2x get nearly the full budget
+too --- expected, not a bug.
+
+**A caution on interpreting unif-kkm-1x/2x vs. kabc, from the smoke test:**
+on a hard pair, kabc's failure mode is the graceful trivial-cluster fallback
+(ARI EXACTLY 0.0, per the mathematical property above) --- while unif-kkm,
+never having that option, always commits to SOME 2-way split with whatever
+budget it has, which tends to land above 0 even when wrong. So an
+unif-kkm-1x/2x mean ARI exceeding kabc's is not necessarily "uniform
+sampling found the structure better" --- it can equally be "kabc's honest
+abstention scores worse under ARI than a forced guess does, on a hard
+instance." Report `stopped` alongside ARI for exactly this reason; do not
+read an ARI gap alone as evidence of an adaptivity advantage in either
+direction.
+
+**Per-rep pair sampling (shared machinery, all three versions).** For a given
+rep, the movie pair is sampled ONCE, producing ONE environment --- every one
+of the 6 algorithm rows (kabc, kabc-sg, acb, tas-fw, unif-kkm-1x,
+unif-kkm-2x) is then run against that SAME environment/pair for that rep,
+not independently re-paired per algorithm. (Each algorithm still gets its
+own pull-randomness sub-stream --- so their individual pull sequences
+differ, but all of them face the identical clustering problem for a given
+rep, making cross-algorithm comparison within a rep apples-to-apples.) Each
+rep's seed (`seed_formula` as elsewhere: `seed = seed_multiplier * exp_id +
+rep`) is split into two independent sub-streams: one drives this
+once-per-rep pair sampling (movie A/B selection), the other drives the
+algorithms' pull randomness (further split per-algorithm) --- kept separate
+so which pair got sampled never gets confounded with the pull-noise that
+follows. Movie A is drawn uniformly at random from the 207 movies using the
+pair-sampling sub-stream; movie B is chosen from A according to the
+version-specific rule below. **If no eligible B exists for a drawn A**
+(possible for movies near the extremes of the mean-rating range, e.g. *Mars
+Attacks!* at 2.90 or *Shawshank Redemption* at 4.55), resample a fresh A from
+the same sub-stream and retry, deterministically, until a valid pair is
+found --- never treated as an error.
+
+**Common random numbers across versions:** the pair-sampling sub-stream is
+seeded identically across all three versions for a given rep index --- i.e.
+rep 7 draws the *same* movie A in exp4_1, exp4_2, and exp4_3. Only the
+B-selection rule differs between versions. This isolates the effect of the
+pairing RULE from independent sampling noise when comparing versions.
+
+**Version-specific B-selection rules:**
+- **exp4_1 --- tight mean gap, MMD-maximizing.** Candidates = all movies with
+  `|mean_A − mean_B| ≤ 0.1` (`mean_gap_tol = 0.1`). B = argmax MMD² among
+  candidates (deterministic given A and the fixed bandwidth) --- the same
+  "polarizing vs consensus, cherry-picked for maximum shape difference at
+  matched mean" construction as Experiment 3, but redrawn fresh every rep
+  instead of fixed once.
+- **exp4_2 --- moderate mean gap, uniform.** Candidates = all movies with
+  `0.1 ≤ |mean_A − mean_B| ≤ 0.5` (a RANGE, not a one-sided threshold ---
+  excludes both the near-zero-gap pairs that overlap `exp4_1`'s hard region
+  and trivially-easy very-large-gap pairs). B sampled UNIFORMLY at random
+  among candidates (not MMD-maximizing). Tests behavior once genuine,
+  moderate mean separation exists --- NOT framed as favoring any specific
+  algorithm (the smoke test showed acb struggling here too).
+- **exp4_3 --- tight-ish mean gap, uniform.** Candidates = all movies with
+  `|mean_A − mean_B| ≤ 0.2` (`mean_gap_tol = 0.2`, looser than `exp4_1`'s
+  0.1 --- see revision history above for why). B sampled UNIFORMLY at random
+  among candidates (not MMD-maximizing). Same-mean-ish regime as `exp4_1`,
+  but without cherry-picking the shape difference --- tests whether kabc's
+  advantage in `exp4_1` was really about shape-sensitivity, or partly an
+  artifact of always picking the most-different pair available (not a
+  perfectly gap-matched ablation against `exp4_1`, since the tolerances now
+  differ, 0.1 vs. 0.2 --- an accepted trade-off, see revision history).
+
+**Environment.** `kabc.environments.MovieLensPairEnv`, built fresh per rep
+from the sampled `(movie_id_a, movie_id_b)`: `arms_per_prototype=5` each
+(N=10), resampling with replacement from each movie's real rating pool
+exactly like `MovieLensEnv.pull` already does; standard balanced 2-cluster
+ground truth. Takes rating pools directly (pre-loaded once from
+`data/ml-1m-207/`) rather than loading/filtering `ratings.dat` itself, since
+a fresh environment is built every rep.
+
+**Output.** THREE separate files, one per version ---
+`results/exp4_1/results.parquet`, `results/exp4_2/results.parquet`,
+`results/exp4_3/results.parquet` --- rather than one combined file with a
+`version` column, so `notebooks/04`'s plotting code can load and process one
+version at a time with the same logic. Each row also carries the per-rep
+sampled pair itself (`movie_id_a, movie_id_b, title_a, title_b, mean_a,
+mean_b, mmd2_ab`) --- unlike Experiments 1-3, the instance varies per rep
+here, so the sampled pair is essential context for any post-hoc analysis
+(e.g. checking whether hard cases cluster around specific movies).
+
+**Figures:** three bar plots (ARI, τ, wall-clock/rep), each with 3 sets
+(versions) of 6 bars (algorithms) --- 18 bars per plot, mean ± std
+(`notebooks/04_movielens_random_pairs.ipynb`).
+
+**Expected outcome:** exp4_1 (tight gap, MMD-maximizing) --- kabc/kabc-sg
+should separate reliably where acb is mean-blind and stuck near budget_cap,
+similar in spirit to Experiment 3's headline result but now averaged over a
+random sample of same-mean pairs rather than one fixed instance; the smoke
+test's finding that kabc-sg can confidently converge to a wrong (not just
+non-converged) answer on hard pairs here should be watched for at full
+scale. exp4_2 (moderate gap, uniform) --- acb is expected to do at least
+somewhat better here than in exp4_1 given real mean separation exists,
+though the smoke test already showed it far from perfect (mean ARI 0.12,
+20% stopped rate over 5 reps) --- this needs the full run to know if that
+holds up. exp4_3 (tight-ish gap, uniform) --- tests whether exp4_1's
+advantage for kabc survives without MMD-maximizing cherry-picking; expected
+to be harder than exp4_1 for every algorithm (no cherry-pick) but not as
+uniformly degenerate as the original mean_gap_tol=0.1 version was, given the
+loosened 0.2 tolerance. unif-kkm-1x/2x against kabc's ARI at comparable or
+double budget is the informative comparison for whether active selection
+matters independent of budget size, subject to the ARI-floor caution above.
 
 ---
 

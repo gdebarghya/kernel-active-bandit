@@ -1,0 +1,89 @@
+# Experiment 4 -- MovieLens random pairs: robustness across the real-data
+# pair distribution. See docs/experiments.md, "Experiment 4" section for the
+# full design, including its "REVISION HISTORY" (this config has been
+# revised twice after real smoke-test evidence -- unif-kkm-full dropped,
+# budget_cap raised, exp4_1/exp4_2's thresholds changed, exp4_3 dropped then
+# re-added with a looser threshold). Unlike exp1-3's grid-based configs (one
+# environment built per grid point, reused across all reps), this one is
+# consumed by scripts/run_experiment4.py -- a separate dedicated script, not
+# run_experiment.py -- because exp4 rebuilds a FRESH environment every rep
+# (a new randomly-sampled movie pair), which doesn't fit the shared grid
+# engine's per-grid-point-env-reuse loop.
+
+exp_id: 4
+delta: 0.05
+reps: 100
+seed_multiplier: 1000
+seed_formula: "seed = seed_multiplier * exp_id + rep"
+
+data_dir: data/ml-1m-207      # scripts/build_movielens_207.py's output
+arms_per_prototype: 5          # N = 2 * arms_per_prototype = 10, K = 2 fixed
+budget_cap: 20000              # fixed, not s_star_formula -- same rationale as
+                                # Experiment 3's reduced instance (a formula-
+                                # derived cap isn't meaningful at this scale).
+                                # Raised back from an intermediate 10000: that
+                                # reduction was made purely to bound tas-fw's
+                                # worst-case per-rep cost, which is now capped
+                                # a different way (N fixed at 10, see
+                                # docs/experiments.md's "Why N cannot grow"),
+                                # so there's no remaining reason to keep
+                                # budget_cap below kabc's real needs -- some
+                                # smoke-test kabc failures were exactly
+                                # budget-exhaustion falling back to the
+                                # trivial-partition answer.
+
+n_jobs: 10                     # parallelize ACROSS REPS (not across the
+                                # algorithm-rows within one rep) -- see
+                                # docs/experiments.md Experiment 4
+                                # "Parallelization" for the full rationale
+                                # (resolves the unif-kkm budget dependency
+                                # below for free, and load-balances
+                                # tas-fw-heavy vs cheap reps across workers).
+
+# Full 100 reps for every algorithm including tas-fw: at N=10/K=2, tas-fw's
+# hypothesis space (2-block partitions of 10 arms, both blocks size >= 2) has
+# size |C| = 2^(N-1) - 1 - N = 501 -- see docs/experiments.md's "Why N cannot
+# grow" for the real smoke-test timing this implies (multiple MINUTES/rep
+# when tas-fw fails to converge, which was most reps in the smoke test).
+#
+# unif-kkm has TWO variants, not three (docs/experiments.md's "unif-kkm
+# variants": unif-kkm-full was dropped after the smoke test showed it
+# uninteresting, ARI~1.0 almost everywhere): unif-kkm-1x and unif-kkm-2x use
+# min(1x, 2x) times that SAME (rep, version)'s kabc tau, capped at
+# budget_cap -- so kabc must run before them (resolved by running algorithms
+# sequentially within one rep's worker, see n_jobs note above).
+algorithms: [kabc, kabc-sg, acb, tas-fw, unif-kkm-1x, unif-kkm-2x]
+
+# One knob differs per version: how movie B is chosen relative to movie A
+# (see docs/experiments.md Experiment 4 "Version-specific B-selection
+# rules"). `rule: max_mmd` = deterministic argmax MMD^2 among eligible
+# candidates; `rule: uniform` = uniform-random choice among them.
+# `comparison` says how the gap bound(s) constrain |mean_A - mean_B|:
+# `le` = "<= mean_gap_tol" (same-mean-ish); `range` = "mean_gap_min <=
+# gap <= mean_gap_max" (bounded both sides, used by exp4_2 to exclude both
+# near-zero-gap pairs and trivially-easy very-large-gap pairs).
+#
+# Movie A is drawn identically across all three versions for a given rep
+# (common random numbers) via a shared candidate-order permutation; each
+# version then picks the first candidate A (in that shared order) with at
+# least one eligible B under ITS OWN rule -- so versions only diverge on
+# movie A in the rare case where the shared draw's first choice has no
+# eligible partner under a stricter version's rule (see
+# scripts/run_experiment4.py).
+versions:
+  - name: exp4_1
+    rule: max_mmd
+    comparison: le
+    mean_gap_tol: 0.1
+  - name: exp4_2
+    rule: uniform
+    comparison: range
+    mean_gap_min: 0.1
+    mean_gap_max: 0.5
+  - name: exp4_3
+    rule: uniform
+    comparison: le
+    mean_gap_tol: 0.2      # looser than exp4_1's 0.1, deliberately -- see
+                            # docs/experiments.md's revision history: the
+                            # original 0.1 made kabc fail with ARI=0.0 on
+                            # EVERY smoke-test rep here, no usable signal.

@@ -20,6 +20,11 @@ instances:
     sweeps:
       - param: sigma_B
         values: [1.5, 2, 3, 4]
+    # Crossed with every (swept_param, swept_value) grid point, same
+    # semantics as exp1.yaml: 1.0 is the delta-PAC guaranteed-budget pass
+    # (headline tau/error), 0.25 is the restricted-budget pass (ARI when
+    # queries are scarce). Reported together, same flavor as Experiment 1.
+    budget_multipliers: [1.0, 0.25]
     algorithms:
       - id: kabc
       - id: kabc-sg
@@ -39,11 +44,60 @@ instances:
   # 0.5*N(-a,b^2) + 0.5*N(a,b^2), b^2 = 1-a^2 (matches mean AND variance;
   # only shape differs). kabc.environments.MomentMatchedMixtureEnv derives
   # b from a internally -- not a separate constructor kwarg.
+  # Split into two entries (same family name, different sweep range/
+  # budget_multipliers) rather than one entry crossed with both
+  # multipliers, because the safe `a` range differs by multiplier:
+  #
+  # Direct kabc._fit diagnostic runs (4 seeds each, real calibrated const)
+  # showed a in {0.5, 0.7} hits the Gram-matrix memory_guard on 3/4 seeds
+  # at the FULL budget_cap -- kabc never reaches a real stopping decision
+  # there (safely bounded, not OOM-crashing, but not usable for a tau/error
+  # comparison). A follow-up check at the 0.25x cap showed the SAME 3/4
+  # memory_guard rate -- the guard trips based on the Gram matrix size at
+  # a given doubling-trick iteration, not on how much budget remains, and
+  # here the 0.25x cap (e.g. 7.27M for a=0.5) is still far above the actual
+  # stopping point (tau=176640 in all of these runs) -- budget_cap was
+  # never the binding constraint at either multiplier, so shrinking it
+  # doesn't dodge the guard.
+  #
+  # So: the guaranteed-budget (1.0x) pass is restricted to the range where
+  # kabc reliably converges ({0.8, 0.85, 0.9, 0.95}; 0.85 added to keep 4
+  # evenly-spaced safe points) -- a tau/error comparison at a=0.5/0.7 would
+  # mostly just be reporting memory_guard trips, not real convergence
+  # behavior. The restricted-budget (0.25x) pass covers the FULL range
+  # including {0.5, 0.6, 0.7} (0.6 added between the excluded points and
+  # the safe region) -- even though most low-a runs there will also show
+  # stop_reason=memory_guard rather than budget_cap, the resulting ARI on
+  # the best partition-so-far is still valid data (docs/experiments.md
+  # section 0.4 already generalizes the ARI-at-cap metric to ANY
+  # algorithm's stopped=False runs, regardless of which stop_reason caused
+  # it), and a full-range restricted-budget ARI curve is exactly what's
+  # needed to honestly show degradation across all of `a`, not just the
+  # convergent subset.
   - family: moment_matched_mixture
     base: {N: 40}               # K=2 fixed internally
     sweeps:
       - param: a
-        values: [0.5, 0.7, 0.8, 0.9, 0.95]
+        values: [0.8, 0.85, 0.9, 0.95]
+    budget_multipliers: [1.0]
+    algorithms:
+      - id: kabc
+      - id: kabc-sg
+      - id: kabc-oracle
+      - id: acb
+        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
+      - id: unif-kkm
+    budget_cap:
+      type: s_star_formula
+      constant: 200
+      formula: "constant * N * s_star**-2 * log(N / delta)"
+
+  - family: moment_matched_mixture
+    base: {N: 40}               # K=2 fixed internally
+    sweeps:
+      - param: a
+        values: [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
+    budget_multipliers: [0.25]
     algorithms:
       - id: kabc
       - id: kabc-sg
@@ -61,6 +115,7 @@ instances:
   - family: ring_blob
     base: {N: 40, ring_radius: 2.0, ring_noise: 0.1}   # K=2 fixed internally
     sweeps: []
+    budget_multipliers: [1.0, 0.25]
     algorithms:
       - id: kabc
       - id: kabc-sg

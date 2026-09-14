@@ -29,7 +29,10 @@ import matplotlib.pyplot as plt
 # warm (vermillion/orange/black) family since they are "our method and its
 # variants"; acb/tas-fw/unif-kkm get cool, visually distinct competitor
 # colors. Order controls legend and box-plot ordering everywhere.
-ALGO_ORDER = ["kabc", "kabc-sg", "kabc-oracle", "acb", "tas-fw", "unif-kkm"]
+ALGO_ORDER = [
+    "kabc", "kabc-sg", "kabc-oracle", "acb", "tas-fw",
+    "unif-kkm", "unif-kkm-full", "unif-kkm-2x", "unif-kkm-1x",
+]
 
 ALGO_COLORS = {
     "kabc": "#D55E00",  # vermillion -- our main method, bold
@@ -38,6 +41,13 @@ ALGO_COLORS = {
     "acb": "#0072B2",  # blue -- main competitor (mean-based)
     "tas-fw": "#009E73",  # green -- finite-alphabet competitor
     "unif-kkm": "#999999",  # grey -- naive non-adaptive baseline
+    # Experiment 4's three unif-kkm variants (docs/experiments.md "unif-kkm
+    # variants"): same grey family as "unif-kkm" above, shaded darkest to
+    # lightest as budget shrinks (full > 2x-kabc-tau > 1x-kabc-tau), so the
+    # visual ordering matches the budget ordering at a glance.
+    "unif-kkm-full": "#4D4D4D",
+    "unif-kkm-2x": "#999999",
+    "unif-kkm-1x": "#CCCCCC",
 }
 
 ALGO_LABELS = {
@@ -47,6 +57,9 @@ ALGO_LABELS = {
     "acb": "ACB",
     "tas-fw": "TaS-FW",
     "unif-kkm": "Unif-KKM",
+    "unif-kkm-full": "Unif-KKM (full)",
+    "unif-kkm-2x": "Unif-KKM (2x)",
+    "unif-kkm-1x": "Unif-KKM (1x)",
 }
 
 # Linestyle carries a second channel of identity so greyscale figures still
@@ -59,6 +72,9 @@ ALGO_LINESTYLES = {
     "acb": "-",
     "tas-fw": "-",
     "unif-kkm": "--",
+    "unif-kkm-full": "--",
+    "unif-kkm-2x": "-.",
+    "unif-kkm-1x": ":",
 }
 
 ALGO_MARKERS = {
@@ -68,6 +84,9 @@ ALGO_MARKERS = {
     "acb": "D",
     "tas-fw": "v",
     "unif-kkm": "x",
+    "unif-kkm-full": "x",
+    "unif-kkm-2x": "P",
+    "unif-kkm-1x": "*",
 }
 
 

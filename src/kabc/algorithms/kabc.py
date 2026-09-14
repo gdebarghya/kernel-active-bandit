@@ -84,6 +84,7 @@ MAX_ITERATIONS = 50
 STOP_REASON_BUDGET_CAP = "budget_cap"
 STOP_REASON_MAX_ITERATIONS = "max_iterations"
 STOP_REASON_MEMORY_GUARD = "memory_guard"
+STOP_REASON_DEGENERATE_PILOT = "degenerate_pilot"
 
 # MEMORY GUARD: _cluster_once's dominant simultaneous allocation is
 # mmd2_plugin's three n x n Gram matrices (Kxx, Kyy, Kxy) held alive at once
@@ -250,7 +251,42 @@ def _pilot_or_graceful_stop(
     # Pilot phase: n_pilot pulls/arm, pooled, for the median-heuristic bandwidth.
     # Counts toward tau; discarded afterward (not reused by the main loop).
     pilot = [_pull_batch(env, i, N_PILOT, rng) for i in range(N)]
-    bandwidth = median_heuristic_bandwidth(np.concatenate(pilot, axis=0))
+    pooled = np.concatenate(pilot, axis=0)
+    try:
+        # on_degenerate="mean": real discrete data can make the MEDIAN
+        # pairwise distance zero (>50% of pairs tied) even when the
+        # underlying population has genuine spread -- e.g. a small pilot
+        # sample from a highly-rated MovieLens movie can draw mostly 4s/5s
+        # by chance, since the rare low ratings are absent, not nonexistent,
+        # in that sample. Falling back to the MEAN pairwise distance
+        # recovers a usable bandwidth in exactly this case (confirmed on a
+        # real incident: Schindler's List vs Rear Window, Experiment 4 --
+        # median=0 despite mean=0.52 pairwise rating-distance).
+        bandwidth = median_heuristic_bandwidth(pooled, on_degenerate="mean", warn_on_fallback=True)
+    except ValueError:
+        # Even the mean-based backup is degenerate (every pooled sample
+        # identical -- no bandwidth is recoverable from this pilot data at
+        # all). Graceful, not a crash: matches the budget-too-tight path
+        # above -- one unlucky pilot draw shouldn't kill an entire
+        # multi-hour Monte Carlo sweep. tau=pilot_cost (not 0) since the
+        # pilot pulls WERE actually made here, unlike the budget-too-tight
+        # case, which makes none.
+        warnings.warn(
+            f"pilot sample's pairwise distances are all (numerically) zero "
+            f"(every pooled sample identical); returning stopped=False with "
+            f"only the pilot phase completed (tau={pilot_cost})",
+            stacklevel=3,
+        )
+        return (
+            pilot_cost,
+            None,
+            Result(
+                partition=np.zeros(N, dtype=int),
+                tau=pilot_cost,
+                stopped=False,
+                history=[{"stop_reason": STOP_REASON_DEGENERATE_PILOT}],
+            ),
+        )
     return pilot_cost, bandwidth, None
 
 
