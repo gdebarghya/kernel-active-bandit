@@ -1,9 +1,10 @@
 """Build a smaller, derived MovieLens dataset: only the 207 movies with
->=1000 ratings in the full MovieLens-1M ratings.dat (the same filter
-Experiment 3's `MovieLensEnv` applies via `min_ratings=1000`), plus their
-titles/rating counts/means. Written once to data/ml-1m-207/ so downstream
-work (e.g. Experiment 4's per-rep random movie-pair sampling) doesn't have
-to re-load and re-filter the full ~1M-row ratings.dat every time.
+>=1000 ratings in the full MovieLens-1M ratings.dat (the same
+`min_ratings=1000` filter `kabc.environments._movie_rating_distributions`
+applies), plus their titles/rating counts/means. Written once to
+data/ml-1m-207/ so downstream work (Experiment 3's per-rep random
+movie-pair sampling) doesn't have to re-load and re-filter the full
+~1M-row ratings.dat every time.
 
 Requires data/ml-1m/ (see `make data` / scripts/download_movielens.py).
 Run directly: `python -m scripts.build_movielens_207`.

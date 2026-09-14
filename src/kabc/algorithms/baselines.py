@@ -69,6 +69,14 @@ _KERNEL_MATRIX_SAMPLE_SIZE = 300  # per-arm subsample cap for each O(n^2) arm-pa
 _N_INIT = 10
 _MAX_ITER = 100
 
+# Mirrors kabc.py's STOP_REASON_DEGENERATE_PILOT (same underlying failure
+# mode: real discrete data, e.g. a highly-rated MovieLens movie, can draw a
+# pooled sample whose pairwise distances are all numerically zero). Named
+# "_bandwidth" rather than "_pilot" here since unif-kkm has no separate
+# pilot phase -- the samples that fail to yield a bandwidth are the SAME
+# samples `tau` already paid for and that clustering would otherwise use.
+STOP_REASON_DEGENERATE_BANDWIDTH = "degenerate_bandwidth"
+
 
 def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
     """unif-kkm: uniform sampling + kernel k-means. `delta` is accepted for
@@ -95,7 +103,28 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
     arm_samples = [_pull_batch(env, i, n, rng) for i in range(N)]
     tau = N * n
 
-    bandwidth = _pooled_bandwidth(arm_samples, rng)
+    try:
+        bandwidth = _pooled_bandwidth(arm_samples, rng)
+    except ValueError:
+        # Even the mean-based fallback inside _pooled_bandwidth is
+        # degenerate (every pooled sample identical) -- no bandwidth is
+        # recoverable from this draw at all. Graceful, not a crash: matches
+        # kabc.py's STOP_REASON_DEGENERATE_PILOT convention. tau still
+        # reflects the N*n pulls actually made -- unlike kabc's pilot-phase
+        # analogue, those pulls already happened and are the real cost of
+        # this attempt, degenerate bandwidth or not.
+        warnings.warn(
+            f"pooled sample's pairwise distances are all (numerically) zero "
+            f"(every pooled sample identical); returning stopped=False with "
+            f"tau={tau} (the {tau} pulls were made -- only the bandwidth/"
+            f"clustering step failed)",
+            stacklevel=2,
+        )
+        return Result(
+            partition=np.zeros(N, dtype=int), tau=tau, stopped=False,
+            history=[{"stop_reason": STOP_REASON_DEGENERATE_BANDWIDTH}],
+        )
+
     kernel_matrix_samples = [_subsample(X, _KERNEL_MATRIX_SAMPLE_SIZE, rng) for X in arm_samples]
     arm_kernel = _arm_kernel_matrix(kernel_matrix_samples, bandwidth)
     partition = _kernel_kmeans(arm_kernel, K, rng)
@@ -119,7 +148,12 @@ def _pooled_bandwidth(arm_samples: list[np.ndarray], rng: np.random.Generator) -
     if pooled.shape[0] > _BANDWIDTH_SAMPLE_SIZE:
         idx = rng.choice(pooled.shape[0], size=_BANDWIDTH_SAMPLE_SIZE, replace=False)
         pooled = pooled[idx]
-    return median_heuristic_bandwidth(pooled)
+    # on_degenerate="mean": same real-data failure mode documented in
+    # kabc.py's _pilot_or_graceful_stop -- a median pairwise distance of
+    # exactly zero can happen even when the population has genuine (if
+    # rare) spread. Falls back to the mean distance first; `fit` above
+    # catches the ValueError this still raises if even THAT is degenerate.
+    return median_heuristic_bandwidth(pooled, on_degenerate="mean", warn_on_fallback=True)
 
 
 def _arm_kernel_matrix(arm_samples: list[np.ndarray], bandwidth: float) -> np.ndarray:

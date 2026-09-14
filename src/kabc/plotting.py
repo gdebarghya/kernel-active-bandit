@@ -25,68 +25,98 @@ import matplotlib.pyplot as plt
 
 # Canonical algorithm identity, fixed across notebooks 01/02/03 and every
 # figure in the paper. Colors are Okabe-Ito-derived (colorblind-safe,
-# distinguishable in greyscale print): kabc/kabc-sg/kabc-oracle share a
-# warm (vermillion/orange/black) family since they are "our method and its
-# variants"; acb/tas-fw/unif-kkm get cool, visually distinct competitor
-# colors. Order controls legend and box-plot ordering everywhere.
+# distinguishable in greyscale print): kabc/kabc-sg share a warm
+# (vermillion/orange) family since they are "our method and its variants";
+# acb/tas-fw/unif-kkm get cool, visually distinct competitor colors. Order
+# controls legend and box-plot ordering everywhere.
 ALGO_ORDER = [
-    "kabc", "kabc-sg", "kabc-oracle", "acb", "tas-fw",
-    "unif-kkm", "unif-kkm-full", "unif-kkm-2x", "unif-kkm-1x",
+    "kabc", "kabc-0.5x", "kabc-sg", "kabc-sg-0.5x",
+    "acb", "acb-0.5x", "tas-fw",
+    "unif-kkm-1x", "unif-kkm-0.5x",
 ]
 
 ALGO_COLORS = {
     "kabc": "#D55E00",  # vermillion -- our main method, bold
+    # Stopping-rule-conservativeness check (docs/experiments.md, Experiment 1's
+    # REDESIGN note / Experiment 3's REVISION 4): each of kabc/kabc-sg/acb
+    # re-run at 0.5x ITS OWN realized tau -- MULTIPLIER CHANGED from an
+    # earlier 0.9x (2026-09-14): KABC's doubling trick quantizes its own
+    # realized tau to a small set of round-boundary checkpoints, and the
+    # FINAL round alone typically costs roughly half of the total realized
+    # tau -- so a 0.9x cut almost always lands in the same "one checkpoint
+    # short" bucket as a much larger cut would (there is no way to construct
+    # a real "kabc re-run with 10% less budget" that isn't actually testing
+    # "one fewer doubling round" against an independent draw). 0.5x makes
+    # what is actually being tested explicit: a meaningfully smaller,
+    # still-real budget cut, not a false-precision "10% margin" the doubling
+    # schedule cannot honor. See docs/experiments.md's Experiment 1 REDESIGN
+    # note for the full reasoning and the concrete evidence that motivated
+    # this change. Same color family as its base algorithm, a
+    # lighter/softer shade, so each reads as "base algorithm, less budget"
+    # at a glance rather than a wholly distinct method.
+    "kabc-0.5x": "#F4A582",
     "kabc-sg": "#E69F00",  # orange -- our method, sub-Gaussian ablation
-    "kabc-oracle": "#000000",  # black -- oracle reference line, not a "real" method
+    "kabc-sg-0.5x": "#F0C674",
+    # kabc-oracle REMOVED (was "#000000"): no current experiment uses it --
+    # Experiment 2's redesign dropped it along with the "price of
+    # adaptivity" figure it existed for, and it was never used by
+    # Experiment 1/3. Removed entirely rather than kept as a legacy
+    # placeholder, same principle as unif-kkm-full/unif-kkm-2x above.
     "acb": "#0072B2",  # blue -- main competitor (mean-based)
+    "acb-0.5x": "#89BEDC",
     "tas-fw": "#009E73",  # green -- finite-alphabet competitor
-    "unif-kkm": "#999999",  # grey -- naive non-adaptive baseline
-    # Experiment 4's three unif-kkm variants (docs/experiments.md "unif-kkm
-    # variants"): same grey family as "unif-kkm" above, shaded darkest to
-    # lightest as budget shrinks (full > 2x-kabc-tau > 1x-kabc-tau), so the
-    # visual ordering matches the budget ordering at a glance.
-    "unif-kkm-full": "#4D4D4D",
-    "unif-kkm-2x": "#999999",
+    # unif-kkm variants (tied to a base algorithm's own realized tau, not an
+    # independent sweep -- see docs/experiments.md's Experiment 1/2/3
+    # sections): grey family, shaded darker to lighter as budget shrinks (1x
+    # > 0.5x), so the visual ordering matches the budget ordering at a
+    # glance. Bare "unif-kkm" (no tau-multiplier suffix) and
+    # `unif-kkm-full`/`unif-kkm-2x` (earlier designs, since superseded) were
+    # removed entirely once no current config or surviving results
+    # referenced them -- not kept as legacy placeholders.
     "unif-kkm-1x": "#CCCCCC",
+    "unif-kkm-0.5x": "#E5E5E5",
 }
 
 ALGO_LABELS = {
     "kabc": "KABC",
+    "kabc-0.5x": "KABC (0.5x τ)",
     "kabc-sg": "KABC-SG",
-    "kabc-oracle": "KABC-oracle",
+    "kabc-sg-0.5x": "KABC-SG (0.5x τ)",
     "acb": "ACB",
+    "acb-0.5x": "ACB (0.5x τ)",
     "tas-fw": "TaS-FW",
-    "unif-kkm": "Unif-KKM",
-    "unif-kkm-full": "Unif-KKM (full)",
-    "unif-kkm-2x": "Unif-KKM (2x)",
     "unif-kkm-1x": "Unif-KKM (1x)",
+    "unif-kkm-0.5x": "Unif-KKM (0.5x)",
 }
 
 # Linestyle carries a second channel of identity so greyscale figures still
-# separate the three KABC variants (which share the warm color family) and
-# marks the two reference-only curves (oracle, unif-kkm) as dashed/dotted.
+# separate variants that share a color family, and marks the reference-only
+# curve (unif-kkm) as dashed. Every "own-base 0.5x self-comparison" row
+# (kabc-0.5x, kabc-sg-0.5x, acb-0.5x) shares "-." as a unifying "this is a
+# 0.5x-of-its-own-tau variant" signal, distinct from unif-kkm's separate
+# budget-tier styling below.
 ALGO_LINESTYLES = {
     "kabc": "-",
+    "kabc-0.5x": "-.",
     "kabc-sg": "--",
-    "kabc-oracle": ":",
+    "kabc-sg-0.5x": "-.",
     "acb": "-",
+    "acb-0.5x": "-.",
     "tas-fw": "-",
-    "unif-kkm": "--",
-    "unif-kkm-full": "--",
-    "unif-kkm-2x": "-.",
     "unif-kkm-1x": ":",
+    "unif-kkm-0.5x": ":",
 }
 
 ALGO_MARKERS = {
     "kabc": "o",
+    "kabc-0.5x": "h",
     "kabc-sg": "s",
-    "kabc-oracle": "^",
+    "kabc-sg-0.5x": "p",
     "acb": "D",
+    "acb-0.5x": "<",
     "tas-fw": "v",
-    "unif-kkm": "x",
-    "unif-kkm-full": "x",
-    "unif-kkm-2x": "P",
     "unif-kkm-1x": "*",
+    "unif-kkm-0.5x": "d",
 }
 
 

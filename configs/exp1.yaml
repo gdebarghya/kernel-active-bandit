@@ -1,15 +1,39 @@
 # Experiment 1 -- Gaussian mixtures: competitiveness in the parametric regime.
-# See docs/experiments.md, "Experiment 1" section, for the full design and
-# expected outcomes. This file encodes only the grid/protocol; algorithm and
-# environment implementations live in src/kabc/.
+# See docs/experiments.md, "Experiment 1" section, for the full design,
+# including its REDESIGN NOTE (this config was rewritten from its original
+# form: the restricted-budget 1.0x/0.25x pass is gone, replaced by the
+# per-algorithm 0.5x-of-its-own-tau rows below -- MULTIPLIER note: this was
+# originally 0.9x, changed to 0.5x once KABC's doubling-trick quantization
+# made clear a 0.9x cut cannot actually test "10% less budget" (the final
+# doubling round alone typically costs ~half of the realized tau, so 0.9x
+# almost always lands in the same "one round short" bucket as a much larger
+# cut would); unif-kkm no longer sweeps its own independent n-grid). This
+# file encodes only the grid/protocol;
+# algorithm and environment implementations live in src/kabc/. Consumed by
+# scripts/run_experiment1.py -- a dedicated script, not run_experiment.py --
+# see that script's module docstring for why.
 
 exp_id: 1
 delta: 0.05                    # confidence level (docs/experiments.md section 0.4)
-reps: 100                      # default Monte Carlo repetitions per configuration
-reps_overrides: {}             # no tas-fw in this experiment (see the algorithms note below)
-
+reps: 20                       # first pass -- see docs/experiments.md's REDESIGN note
+# rep_start: 0                 # RESUME/APPEND: uncomment and set > 0 to append more
+                                # reps to an EXISTING results/exp1/results.parquet
+                                # instead of recomputing it from scratch -- e.g. a
+                                # fast 10-rep pilot first (reps: 10, rep_start unset
+                                # or 0), then later a follow-up (rep_start: 10,
+                                # reps: 50) appends 40 more reps to the same file.
+                                # Default 0 (omit this line) preserves normal
+                                # from-scratch behavior. Assumes the grid/algorithm
+                                # list is unchanged between the two runs -- see
+                                # scripts/run_experiment1.py's main() for the exact
+                                # mechanism (same pattern as configs/exp3.yaml).
 seed_multiplier: 1000
 seed_formula: "seed = seed_multiplier * exp_id + rep"   # docs/experiments.md section 0.4
+
+n_jobs: 10                     # parallelize ACROSS REPS (not across the 8
+                                # algorithm rows within one rep) -- see
+                                # scripts/run_experiment1.py's module
+                                # docstring for the full rationale.
 
 # One family: N arms in K balanced clusters, N(mu_k, sigma^2 I_d), sigma=1,
 # cluster means mu_k = Delta/sqrt(2)*(e_{2k-1}+e_{2k}) -- see
@@ -28,34 +52,25 @@ instances:
         # d >= 2K = 6 for K=3 (each cluster needs its own coordinate pair).
       - param: N
         values: [30, 60, 120]
-    # Crossed with EVERY (swept_param, swept_value) grid point above (not
-    # folded into `sweeps`, which is one-knob-at-a-time and would only touch
-    # `base`) -- 1.0 reproduces the existing 13 grid points unchanged; 0.25
-    # is the new restricted-budget pass (docs/experiments.md's "how well do
-    # these methods degrade when queries are scarce" figure, complementary
-    # to the delta-PAC guaranteed-budget headline Fig. 1, not a replacement
-    # for it). Doubles Exp 1's total run count (13 grid points x 2
-    # multipliers). Omitting this field entirely (as exp2.yaml/exp3.yaml do)
-    # defaults to [1.0] -- confirmed byte-identical output to before this
-    # field existed, aside from an unrelated, already-documented
-    # stop_reason labeling change (see docs/experiments.md section 0.2's
-    # kabc.py safeguards note).
-    budget_multipliers: [1.0, 0.25]
+    # 8 rows per (grid point, rep) -- three independent base algorithms
+    # (kabc, kabc-sg, acb), each followed by its OWN 0.5x-of-its-own-tau
+    # self-comparison row, plus unif-kkm-1x/unif-kkm-0.5x tied specifically
+    # to kabc's tau. See scripts/run_experiment1.py's DERIVED_VARIANTS for
+    # the exact mapping and docs/experiments.md's "Algorithms" note for the
+    # rationale. Order here doesn't matter -- run_experiment1.py enforces
+    # bases-before-their-dependents regardless of this list's order.
     algorithms:
-      - id: kabc
-      - id: kabc-sg
-      - id: acb
-      - id: unif-kkm
+      [kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x, kabc-sg, kabc-sg-0.5x, acb, acb-0.5x]
       # No tas-fw here: its finite-alphabet assumption doesn't hold for
-      # these continuous Gaussian instances, and the originally-planned
-      # N=15, K=3, d=2 subset is moot anyway (d=2 conflicts with the
-      # d-sweep note above). tas-fw runs only in Experiment 3's reduced
-      # instance -- see docs/experiments.md, Experiment 1 section.
+      # these continuous Gaussian instances -- see docs/experiments.md.
     budget_cap:
       type: s_star_formula
       constant: 200
       formula: "constant * N * s_star**-2 * log(N / delta)"
-      # s_star is computed at runtime from the constructed instance's known
-      # closed-form separation (docs/experiments.md Fig. 1 note), not stored
-      # here; N and delta are this family's own N (per sweep point) and the
-      # top-level delta above.
+      # s_star is Monte-Carlo-estimated at runtime from the constructed
+      # instance (kabc.metrics.estimate_s_star_sq), not stored here; N and
+      # delta are this family's own N (per sweep point) and the top-level
+      # delta above. ONE budget_cap per grid point, shared identically
+      # across all 8 algorithm rows and every rep at that point (unchanged
+      # from the original design) -- no budget_multiplier dimension
+      # anymore, see docs/experiments.md's REDESIGN note.

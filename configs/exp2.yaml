@@ -1,129 +1,108 @@
-# Experiment 2 -- Identical means, different shapes: nonparametric separation.
-# See docs/experiments.md, "Experiment 2" section. Three instance families
-# (2a/2b/2c), each with its own single sweep dimension; all share N=40, K=2,
-# balanced, the same algorithm roster, and the same budget_cap formula.
+# Experiment 2 -- Identical means, different shapes: nonparametric
+# separation. See docs/experiments.md, "Experiment 2" section, for the full
+# design, including its REDESIGN NOTE (this config was rewritten from its
+# original form: `kabc-oracle` and the "price of adaptivity" claim/figure
+# are gone; the restricted-budget 1.0x/0.25x pass is gone, replaced by
+# per-algorithm 0.5x-of-its-own-tau self-comparison rows (originally 0.9x,
+# changed 2026-09-14 -- see MULTIPLIER NOTE below), mirroring
+# Experiment 1) and its GRID TRIM NOTE (2026-09-14): the grid was further
+# trimmed from 10 points down to exactly 6 -- scale_pair sigma_B in {2,3}
+# (dropped 4), moment_matched_mixture a in {0.85,0.9} (dropped 0.8,0.95),
+# ring_blob ring_radius in {2,3} (dropped 4) -- once
+# notebooks/02_same_mean_shapes.ipynb moved to a fixed 6-setting bar-plot
+# structure (mirroring Experiment 3's "3 versions" blocks) instead of
+# per-family sweep line plots: the variation within a family isn't the
+# interesting signal here, these 6 settings are meant as 6 distinct
+# illustrative examples, and a canonical grid computing 4 points that are
+# never plotted would be pure waste. `reps` raised from 20 to 50 to match
+# the actual production run this config now reproduces.
+# Consumed by scripts/run_experiment2.py -- a dedicated script, not the
+# (now-deleted) shared run_experiment.py engine -- see that script's module
+# docstring for why.
 
 exp_id: 2
 delta: 0.05
-reps: 100
-reps_overrides: {}             # no tas-fw in this experiment
-
+reps: 50                       # matches the 50-rep production run this grid was trimmed to reproduce
+# rep_start: 0                 # RESUME/APPEND: uncomment and set > 0 to append more
+                                # reps to an EXISTING results/exp2/results.parquet
+                                # instead of recomputing it from scratch -- e.g. a
+                                # fast 10-rep pilot first (reps: 10, rep_start unset
+                                # or 0), then later a follow-up (rep_start: 10,
+                                # reps: 50) appends 40 more reps to the same file.
+                                # Default 0 (omit this line) preserves normal
+                                # from-scratch behavior. Assumes the grid/algorithm
+                                # list is unchanged between the two runs -- see
+                                # scripts/run_experiment2.py's main() for the exact
+                                # mechanism (same pattern as configs/exp3.yaml).
 seed_multiplier: 1000
 seed_formula: "seed = seed_multiplier * exp_id + rep"
 
+n_jobs: 10                     # parallelize ACROSS REPS (not across the 8
+                                # algorithm rows within one rep) -- see
+                                # scripts/run_experiment2.py's module
+                                # docstring for the full rationale.
+
+# 8 rows per (grid point, rep), IDENTICAL roster and dependency structure to
+# Experiment 1 -- three independent base algorithms (kabc, kabc-sg, acb),
+# each followed by its OWN 0.5x-of-its-own-tau self-comparison row, plus
+# unif-kkm-1x/unif-kkm-0.5x tied specifically to kabc's tau. See
+# scripts/run_experiment2.py's DERIVED_VARIANTS for the exact mapping.
+# kabc-oracle is GONE (see REDESIGN NOTE above) -- no config below lists it.
+# MULTIPLIER NOTE (2026-09-14): renamed from 0.9x to 0.5x -- KABC's
+# doubling-trick schedule quantizes its own realized tau to a small set of
+# round-boundary checkpoints, and the FINAL round alone typically costs
+# roughly half of the total realized tau, so a 0.9x cut cannot actually
+# test "10% less budget" -- it almost always lands in the same "one
+# checkpoint short" bucket as a much larger cut would. 0.5x is honest about
+# what is actually being tested: a meaningfully smaller, still-real budget
+# cut. See scripts/run_experiment2.py's module docstring for the full
+# evidence (direct per-rep inspection of kabc/kabc-0.9x rows).
+ALGORITHMS: &algorithms
+  [kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x, kabc-sg, kabc-sg-0.5x, acb, acb-0.5x]
+
+# Shared budget_cap mechanism, identical to Experiment 1: one Monte-Carlo-
+# estimated s*^2 per grid point, shared across all 8 algorithm rows and
+# every rep at that point. No budget_multiplier anymore.
+BUDGET_CAP: &budget_cap
+  type: s_star_formula
+  constant: 200
+  formula: "constant * N * s_star**-2 * log(N / delta)"
+
 instances:
-  # (2a) Scale pair: cluster A = N(0,1), cluster B = N(0, sigma_B^2).
-  # kabc.environments.ScalePairEnv fixes K=2 internally (not a constructor
-  # kwarg), so `base` only carries N.
+  # (2a) Scale pair: cluster A = N(0,1), cluster B = N(0, sigma_B^2). Same
+  # mean, different variance. Only sigma_B in {2,3} kept (GRID TRIM NOTE
+  # above) -- sigma_B=1.5 was already dropped in the earlier REDESIGN
+  # (closest to A's own variance, slowest point in the old 4-value sweep);
+  # sigma_B=4 dropped in the later 10->6 trim, once these settings became 6
+  # fixed illustrative examples rather than a sweep.
   - family: scale_pair
     base: {N: 40}               # K=2 fixed internally by ScalePairEnv
     sweeps:
       - param: sigma_B
-        values: [1.5, 2, 3, 4]
-    # Crossed with every (swept_param, swept_value) grid point, same
-    # semantics as exp1.yaml: 1.0 is the delta-PAC guaranteed-budget pass
-    # (headline tau/error), 0.25 is the restricted-budget pass (ARI when
-    # queries are scarce). Reported together, same flavor as Experiment 1.
-    budget_multipliers: [1.0, 0.25]
-    algorithms:
-      - id: kabc
-      - id: kabc-sg
-      - id: kabc-oracle          # needs s_star_sq as an oracle input beyond
-                                  # the standard interface -- run_experiment.py's
-                                  # concern, not this config's; see kabc.py's
-                                  # fit_oracle docstring
-      - id: acb
-        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
-      - id: unif-kkm
-    budget_cap:
-      type: s_star_formula
-      constant: 200
-      formula: "constant * N * s_star**-2 * log(N / delta)"
+        values: [2, 3]
+    algorithms: *algorithms
+    budget_cap: *budget_cap
 
   # (2b) Moment-matched mixture: cluster A = N(0,1), cluster B =
   # 0.5*N(-a,b^2) + 0.5*N(a,b^2), b^2 = 1-a^2 (matches mean AND variance;
-  # only shape differs). kabc.environments.MomentMatchedMixtureEnv derives
-  # b from a internally -- not a separate constructor kwarg.
-  # Split into two entries (same family name, different sweep range/
-  # budget_multipliers) rather than one entry crossed with both
-  # multipliers, because the safe `a` range differs by multiplier:
-  #
-  # Direct kabc._fit diagnostic runs (4 seeds each, real calibrated const)
-  # showed a in {0.5, 0.7} hits the Gram-matrix memory_guard on 3/4 seeds
-  # at the FULL budget_cap -- kabc never reaches a real stopping decision
-  # there (safely bounded, not OOM-crashing, but not usable for a tau/error
-  # comparison). A follow-up check at the 0.25x cap showed the SAME 3/4
-  # memory_guard rate -- the guard trips based on the Gram matrix size at
-  # a given doubling-trick iteration, not on how much budget remains, and
-  # here the 0.25x cap (e.g. 7.27M for a=0.5) is still far above the actual
-  # stopping point (tau=176640 in all of these runs) -- budget_cap was
-  # never the binding constraint at either multiplier, so shrinking it
-  # doesn't dodge the guard.
-  #
-  # So: the guaranteed-budget (1.0x) pass is restricted to the range where
-  # kabc reliably converges ({0.8, 0.85, 0.9, 0.95}; 0.85 added to keep 4
-  # evenly-spaced safe points) -- a tau/error comparison at a=0.5/0.7 would
-  # mostly just be reporting memory_guard trips, not real convergence
-  # behavior. The restricted-budget (0.25x) pass covers the FULL range
-  # including {0.5, 0.6, 0.7} (0.6 added between the excluded points and
-  # the safe region) -- even though most low-a runs there will also show
-  # stop_reason=memory_guard rather than budget_cap, the resulting ARI on
-  # the best partition-so-far is still valid data (docs/experiments.md
-  # section 0.4 already generalizes the ARI-at-cap metric to ANY
-  # algorithm's stopped=False runs, regardless of which stop_reason caused
-  # it), and a full-range restricted-budget ARI curve is exactly what's
-  # needed to honestly show degradation across all of `a`, not just the
-  # convergent subset.
+  # only shape differs). Only a in {0.85,0.9} kept (GRID TRIM NOTE above) --
+  # a=0.8/0.95 dropped in the 10->6 trim (a=0.8 was the slowest point in the
+  # whole grid: acb alone runs to tau~8M there without converging).
   - family: moment_matched_mixture
     base: {N: 40}               # K=2 fixed internally
     sweeps:
       - param: a
-        values: [0.8, 0.85, 0.9, 0.95]
-    budget_multipliers: [1.0]
-    algorithms:
-      - id: kabc
-      - id: kabc-sg
-      - id: kabc-oracle
-      - id: acb
-        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
-      - id: unif-kkm
-    budget_cap:
-      type: s_star_formula
-      constant: 200
-      formula: "constant * N * s_star**-2 * log(N / delta)"
+        values: [0.85, 0.9]
+    algorithms: *algorithms
+    budget_cap: *budget_cap
 
-  - family: moment_matched_mixture
-    base: {N: 40}               # K=2 fixed internally
-    sweeps:
-      - param: a
-        values: [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
-    budget_multipliers: [0.25]
-    algorithms:
-      - id: kabc
-      - id: kabc-sg
-      - id: kabc-oracle
-      - id: acb
-        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
-      - id: unif-kkm
-    budget_cap:
-      type: s_star_formula
-      constant: 200
-      formula: "constant * N * s_star**-2 * log(N / delta)"
-
-  # (2c) 2D geometry: ring (radius 2, Gaussian noise 0.1) vs N(0,I_2) blob,
-  # both centered at origin. Single configuration -- no sweep.
+  # (2c) 2D geometry: ring (Gaussian noise 0.1, radius swept) vs N(0,I_2)
+  # blob, both centered at origin. Only ring_radius in {2,3} kept (GRID TRIM
+  # NOTE above) -- ring_radius=4 dropped in the 10->6 trim.
   - family: ring_blob
-    base: {N: 40, ring_radius: 2.0, ring_noise: 0.1}   # K=2 fixed internally
-    sweeps: []
-    budget_multipliers: [1.0, 0.25]
-    algorithms:
-      - id: kabc
-      - id: kabc-sg
-      - id: kabc-oracle
-      - id: acb
-        notes: "budget-capped: acb is mean-blind on this same-mean family and is expected to never stop, always hitting budget_cap (docs/experiments.md Experiment 2 expected outcome)"
-      - id: unif-kkm
-    budget_cap:
-      type: s_star_formula
-      constant: 200
-      formula: "constant * N * s_star**-2 * log(N / delta)"
+    base: {N: 40, ring_noise: 0.1}   # K=2 fixed internally
+    sweeps:
+      - param: ring_radius
+        values: [2, 3]
+    algorithms: *algorithms
+    budget_cap: *budget_cap

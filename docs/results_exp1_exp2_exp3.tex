@@ -1,0 +1,710 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{placeins}
+\usepackage{multirow}
+
+\title{KABC Benchmark: Preliminary Results (Experiments 1--3, Current Redesign)}
+\author{Kernel-based Active Clustering of Bandit Arms\\
+\small Thuot, Vogt, Ghoshdastidar, Verzelen (arXiv:2601.07535)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\noindent This report summarizes the experimental setup, baseline algorithms,
+and results for Experiments 1, 2, and 3 of the \texttt{kernel-active-bandit}
+benchmark suite, \textbf{as they currently stand after a substantial
+redesign of all three experiments} (algorithm roster, grids, and figures all
+changed from the previous report). Full design rationale lives in
+\texttt{docs/experiments.md}; this document summarizes what was actually run
+and what the results show so far, plus a first pass at inferences. This is
+explicitly a \textbf{preliminary} report, written to be reworked once the
+production-scale runs (in particular Experiment 3's) are available --- see
+the Run Provenance paragraph below for exactly what scale each experiment's
+numbers here reflect.
+
+\paragraph{Run provenance.} \texttt{results/exp1/results.parquet} holds
+1{,}120 rows (14 grid points $\times$ 8 algorithms $\times$ 10 reps,
+$\approx$2.6 hours wall-clock) --- a \textbf{preliminary 10-rep pilot}, not
+yet the canonical 20-rep first pass configured in \texttt{configs/exp1.yaml}
+(13 of these 14 points are that canonical grid; the 14th, $N=90$, was added
+purely to get a real timing read across a wider $N$ range and is a
+one-off, not part of the canonical grid). \texttt{results/exp2/results.parquet}
+holds 2{,}400 rows (6 settings $\times$ 8 algorithms $\times$ 50 reps,
+$\approx$2.1 hours wall-clock) --- this \emph{is} the current canonical
+config (\texttt{configs/exp2.yaml} was trimmed to exactly these 6 settings
+and its \texttt{reps} raised to 50 to match), so Experiment 2's numbers below
+are a real first full production run, not a pilot. \textbf{Experiment 3 has
+no current-format results yet} --- the previously saved
+\texttt{results/exp3\_*/results.parquet} predate the algorithm-roster rename
+from \texttt{-0.75x} to \texttt{-0.9x} and are not compatible with the
+current config or notebook; a fresh 50-rep run is planned as a follow-up to
+this report, and the Experiment 3 results subsection below is a placeholder
+pending that run. All three configs share the same underlying architecture:
+dedicated scripts (\texttt{scripts/run\_experiment1/2/3.py}), calibrated
+threshold constants (Section~\ref{sec:calibration}), and figures regenerated
+by \texttt{notebooks/01\_gaussian\_mixtures.ipynb},
+\texttt{notebooks/02\_same\_mean\_shapes.ipynb}, and
+\texttt{notebooks/03\_movielens\_random\_pairs.ipynb} respectively.
+
+\tableofcontents
+
+\section{Experimental Setup}
+
+\subsection{Experiment 1 --- Gaussian mixtures: competitiveness in the parametric regime}
+
+\paragraph{Claim tested.} In the mean-separated Gaussian setting (home turf of
+mean-based methods like ACB), KABC's budget is within a modest factor of ACB's;
+budget scales as $s_*^{-2}\log(N/\delta)$ (the paper's Theorem 3.1). Also
+(current redesign): how conservative each adaptive method's own stopping
+rule is, and whether active/adaptive sampling beats naive uniform sampling
+at a matched budget.
+
+\paragraph{Instance family.} \texttt{GaussianMixtureEnv}: $N$ arms in $K=3$ balanced
+clusters, arm $i$ in cluster $k$ distributed as $\mathcal{N}(\mu_k, \sigma^2 I_d)$,
+$\sigma=1$. Cluster means $\mu_k = \frac{\Delta}{\sqrt2}(e_{2k-1}+e_{2k})$, giving each
+pair of cluster means an actual Euclidean separation of exactly $\Delta$.
+
+\paragraph{Grid.} One knob swept at a time, others held at the base config
+$N{=}60, K{=}3, d{=}10, \Delta{=}3$:
+\begin{itemize}
+  \item $\Delta \in \{1, 1.5, 2, 3, 4, 6\}$ (6 points --- the headline sweep)
+  \item $d \in \{6, 10, 50, 100\}$ (4 points; $d=2$ excluded, construction requires $d \ge 2K=6$)
+  \item $N \in \{30, 60, 120\}$ (3 points canonical; this report's pilot also adds $N=90$ as a 14th point)
+\end{itemize}
+13 canonical grid points (the base config is each sweep's own midpoint, so it
+is run identically under all three sweep tags --- a documented, accepted
+redundancy), 14 in this pilot run.
+
+\paragraph{Algorithms: 8 rows per (grid point, rep).} Three independent BASE
+algorithms --- \texttt{kabc}, \texttt{kabc-sg}, \texttt{acb} --- each run
+once at the grid point's full \texttt{budget\_cap}. Each base is then,
+separately, re-run at $\text{budget\_cap} = \min(0.9 \times \tau_{\text{own}},
+\text{budget\_cap})$ with a fresh independent RNG substream ---
+\texttt{kabc-0.9x}, \texttt{kabc-sg-0.9x}, \texttt{acb-0.9x} respectively,
+each testing how conservative THAT algorithm's own stopping rule is.
+\texttt{unif-kkm-1x} and \texttt{unif-kkm-0.9x} are tied specifically to
+\texttt{kabc}'s own $\tau$ (not kabc-sg's or acb's), testing whether
+active/adaptive selection beats naive uniform sampling at a matched budget.
+No \texttt{tas-fw} here: its finite-alphabet assumption does not hold for
+continuous Gaussian instances (Experiment~3 only).
+
+\paragraph{Budget\_cap.} One value per grid point, shared across all 8
+algorithm rows and every rep: $\text{budget\_cap} = 200\, N\, s_*^{-2}
+\log(N/\delta)$ (Theorem~3.1), $s_*^2$ Monte-Carlo-estimated
+(\texttt{kabc.metrics.estimate\_s\_star\_sq}).
+
+\subsection{Experiment 2 --- Identical means, different shapes: nonparametric separation}
+\label{sec:setup-exp2}
+
+\paragraph{Claim tested.} When clusters share the same mean, mean-based
+methods are blind (ARI at chance for any budget) while KABC recovers the
+partition with budget governed by the MMD gap. Also (current redesign): the
+same stopping-rule-conservativeness and active-vs-uniform-sampling questions
+as Experiment 1.
+
+\paragraph{Instance families and the current 6-setting grid.} Three
+families, $N=40$, $K=2$ throughout. As of this report, the grid is
+\textbf{6 fixed, illustrative settings} (not a sweep whose in-between
+variation is the point --- see \texttt{docs/experiments.md}'s Experiment 2
+GRID TRIM NOTE for the rationale):
+\begin{itemize}
+  \item \textbf{\texttt{scale\_pair}} (2a): cluster A $=\mathcal N(0,1)$, cluster B
+    $=\mathcal N(0,\sigma_B^2)$ --- same mean, different \emph{variance}.
+    $\sigma_B \in \{2, 3\}$.
+  \item \textbf{\texttt{moment\_matched\_mixture}} (2b): cluster A $=\mathcal
+    N(0,1)$, cluster B $= 0.5\,\mathcal N(-a,b^2) + 0.5\,\mathcal N(a,b^2)$,
+    $b^2=1-a^2$ --- same mean \emph{and} variance, different \emph{shape}.
+    $a \in \{0.85, 0.9\}$.
+  \item \textbf{\texttt{ring\_blob}} (2c): cluster A $=$ a 2D ring (Gaussian
+    noise $\sigma=0.1$), cluster B $=\mathcal N(0,I_2)$, both centered at the
+    origin --- same mean, different \emph{2D geometry}. Ring radius $r \in
+    \{2, 3\}$.
+\end{itemize}
+50 repetitions per setting (raised from an earlier 20, to match this
+report's production run).
+
+\paragraph{Algorithms: 8 rows per (setting, rep), identical scheme to
+Experiment 1.} Same base/0.9x-self-comparison/unif-kkm-tied-to-kabc
+structure as Experiment 1 (see above). No \texttt{kabc-oracle} (dropped ---
+its one-shot required budget exceeded \texttt{budget\_cap} at every grid
+point of the old design, so the ``price of adaptivity'' figure it existed
+for never produced real data). No \texttt{tas-fw}, same reason as
+Experiment 1.
+
+\paragraph{Budget\_cap.} Identical mechanism to Experiment 1: one
+$s_*$-formula value per setting, shared across all 8 rows and every rep.
+
+\subsection{Experiment 3 --- MovieLens random pairs: robustness across the real-data pair distribution}
+
+\paragraph{Claim tested.} Whether KABC's advantage (and ACB's/TaS-FW's
+relative behavior) holds up when the movie PAIR is randomly resampled every
+repetition across the real diversity of the MovieLens catalog, under three
+distinct pairing regimes that vary how much mean separation is present and
+whether the second movie is cherry-picked (max MMD$^2$) or sampled
+uniformly. Also: how conservative KABC's own stopping rule is.
+
+\paragraph{Data.} \texttt{data/ml-1m-207/} --- the 207 MovieLens-1M movies
+with $\ge 1000$ ratings. Discrete rating support $\{1,\ldots,5\}$,
+RBF-on-ratings kernel, fixed median-heuristic bandwidth ($=1.0$) computed
+once over the full 207-movie pool.
+
+\paragraph{Instance.} $N=8$ arms, $K=2$ clusters, 4 arms per prototype
+(movie), \texttt{MovieLensPairEnv}. For a given rep, a single shared
+permutation of all 207 movie indices is drawn; each of the three versions
+independently scans that same permutation and picks the first candidate
+movie A with at least one eligible B under \emph{its own} gap rule (so
+versions usually, but not always, land on the same A --- see
+\texttt{docs/experiments.md} for the precise mechanism).
+
+\paragraph{Version-specific B-selection rules.}
+\begin{description}
+  \item[\texttt{exp3\_1} --- tight mean gap, MMD-maximizing.] Candidates: all
+    movies with $|\text{mean}_A - \text{mean}_B| \le 0.25$. $B = \arg\max
+    \mathrm{MMD}^2$ among candidates.
+  \item[\texttt{exp3\_2} --- moderate-to-large mean gap, uniform.]
+    Candidates: all movies with $0.25 \le |\text{mean}_A - \text{mean}_B|
+    \le 1.0$. $B$ sampled uniformly at random among candidates.
+  \item[\texttt{exp3\_3} --- tight mean gap, uniform.] Candidates: all movies
+    with $|\text{mean}_A - \text{mean}_B| \le 0.25$ (same tolerance as
+    \texttt{exp3\_1}, a clean matched-tolerance ablation of cherry-picking
+    vs.\ uniform B-selection). $B$ sampled uniformly at random.
+\end{description}
+
+\paragraph{Budget.} Fixed $\text{budget\_cap}=15{,}000$ pulls (not the
+$s_*$-formula type --- not meaningful at this instance scale). Deliberately
+not raised to clear \texttt{kabc}'s doubling-trick round-7 threshold
+($28{,}560$ at $N=8,\delta=0.05$): this leaves \texttt{kabc}'s own
+non-convergent behavior unchanged while giving \texttt{acb}/\texttt{tas-fw}
+less runway.
+
+\paragraph{Algorithms: 6 rows per (rep, version).} \texttt{kabc},
+\texttt{kabc-0.9x}, \texttt{acb}, \texttt{tas-fw}, \texttt{unif-kkm-1x},
+\texttt{unif-kkm-0.9x} --- the same base/0.9x/unif-kkm-tied-to-kabc scheme
+as Experiments 1--2, restricted to the three algorithms for which it is
+meaningful here (\texttt{kabc-sg} dropped this round --- its fragility on
+this exact real-data setting is already thoroughly documented from a prior
+run, see \texttt{docs/experiments.md}'s REVISION 4 note).
+
+\paragraph{Status.} \textbf{Pending a fresh production run at this
+report's writing time} (Run Provenance paragraph above) --- Section~\ref{sec:results-exp3}
+below is a placeholder.
+
+\FloatBarrier
+\section{Baseline Algorithms}
+\label{sec:baselines}
+
+\subsection{KABC and KABC-SG (this paper's own methods)}
+
+KABC (Algorithm~2 of \cite{kabc2026}) runs a doubling-trick outer loop: at
+iteration $k$, pull $n_k = \lceil 2^k \log(8(N^2-N)/\delta_k)\rceil$ fresh samples
+per arm ($\delta_k = \delta/(4k^2)$), then build a same-cluster graph over all arm
+pairs via a pairwise MMD-based test --- an edge $\{i,j\}$ is added iff the
+empirical MMD statistic between arms $i$ and $j$ falls under a threshold. The
+recovered partition is the graph's connected components; the loop stops the
+first time the number of connected components equals the true $K$.
+
+Two threshold variants are compared (identical outer loop, different pairwise
+test):
+\begin{description}
+  \item[\texttt{kabc}] variance-aware, Wolfer--Alquier-style threshold (Eq.~6 of
+    \cite{kabc2026}): sizes each pair's own threshold from that pair's
+    \emph{empirical} RKHS variance, so a noisier pair automatically gets more
+    slack.
+  \item[\texttt{kabc-sg}] kernel-uniform sub-Gaussian threshold (the Discussion
+    section's ablation in \cite{kabc2026}): uses only the fixed kernel bound
+    (RBF kernel sup $=1$), identical for every pair regardless of that pair's
+    own spread --- the ablation whose practical fragility Section~\ref{sec:conclusions}
+    discusses in detail.
+\end{description}
+
+\paragraph{The \texttt{-0.9x} self-comparison rows (current redesign, all
+three experiments).} For each base algorithm (\texttt{kabc},
+\texttt{kabc-sg}, \texttt{acb}), a second, independent run at
+$\text{budget\_cap} = \min(0.9\times\tau_{\text{own}}, \text{budget\_cap})$
+tests how much margin that algorithm's own stopping rule carries: a small
+ARI drop from the base row to its own \texttt{-0.9x} row means little margin
+was needed (the bound is comfortably tight relative to what was actually
+necessary); a large drop means real accuracy was still being bought in that
+last 10\% of budget. This replaces an earlier, cruder
+$\text{budget\_multiplier}\in\{1.0,0.25\}$ restricted-budget pass applied
+uniformly across all algorithms.
+
+\subsection{ACB --- Active Clustering with Bandit feedback}
+
+Source: \cite{acb2024}. ACB* (this repo's adaptive variant, ``$\theta_*$ and
+$\Delta_*$ unknown,'' referred to throughout as ACB) is a \emph{mean}-based active
+clustering procedure (SRI + ADC subroutines): it estimates each arm's mean
+directly (no kernel/MMD machinery) and clusters by Euclidean distance between
+empirical means, adaptively refining which arms to pull based on estimated
+separation. It is the ``home turf'' competitor for Experiment~1 (mean-separated
+Gaussians, exactly ACB's design setting) and the mean-blindness foil for
+Experiments~2--3 (same-mean, different-shape data, where a mean-only method has no
+signal by construction).
+
+\subsection{TaS-FW --- Track-and-Stop with Frank-Wolfe}
+
+Source: \cite{tasfw2024}. Track-and-Stop based on Frank-Wolfe optimization, for
+$N$-ary clustering of arms whose distributions live on a common \emph{finite}
+alphabet. Only run in Experiment~3, where MovieLens ratings on
+$\{1,\ldots,5\}$ satisfy the finite-alphabet assumption natively; not run on
+Experiments~1--2's continuous instances, which would require an off-label
+discretization approximation outside the algorithm's proven guarantees. Its
+Track-and-Stop design re-scans its entire hypothesis space and re-solves a
+linear program at \emph{every single pull} (not periodically, like KABC's
+doubling trick), which is why Experiment~3 caps $N$ at 8: the hypothesis
+space grows combinatorially in $N$, and empirically \texttt{tas-fw} already
+costs two to three orders of magnitude more wall-clock per repetition than
+every other algorithm at $N=8$.
+
+\subsection{Unif-KKM --- uniform sampling + kernel $k$-means (folklore baseline)}
+
+No paper --- a standard, non-adaptive baseline implemented directly per the
+design doc. Pulls a fixed number of samples per arm, then runs ordinary
+kernel $k$-means on the resulting empirical kernel mean embeddings. Has no
+confidence-based stopping rule and no $\delta$-PAC guarantee --- it always
+spends its entire allotted budget and always ``completes''
+($\text{stopped}=\text{True}$ by construction), so it is included purely as
+a non-adaptive reference point, not as a $\delta$-correct competitor.
+\textbf{Current redesign:} unlike the earlier design (an independent $n$-sweep
+of its own), \texttt{unif-kkm} no longer sweeps an independent budget --- its
+two rows, \texttt{unif-kkm-1x} and \texttt{unif-kkm-0.9x}, are tied
+specifically to \texttt{kabc}'s own realized $\tau$ for that same rep
+($\text{budget\_cap} = \min(1.0\text{ or }0.9 \times \tau_{\texttt{kabc}},
+\text{budget\_cap})$), directly testing whether active/adaptive selection
+beats naive uniform sampling at a matched budget, rather than reporting
+Unif-KKM's own independent budget-accuracy curve.
+
+\FloatBarrier
+\section{Calibration}
+\label{sec:calibration}
+
+\texttt{kabc}, \texttt{kabc-sg}, and \texttt{acb} each have a theoretically-derived
+but conservative leading constant in their stopping threshold. Per the
+calibration protocol (\texttt{docs/experiments.md} \S0.2), each constant was
+empirically calibrated once (binary search for the smallest constant keeping
+empirical error $\le \delta/2$, validated under the REAL formula-derived
+budget regime, not an artificially generous one), then frozen and reused
+unchanged across every experiment. The frozen values actually used for this
+report (unchanged from the previous report):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Algorithm & $c_{\text{cal}}$ & Calibration-set error & Held-out error \\
+\midrule
+\texttt{kabc} & 0.103516 & 0.000 & 0.000 \\
+\texttt{kabc-sg} & 0.121094 & 0.000 & 0.000 \\
+\texttt{acb} & 0.658984 & 0.020 & 0.010 \\
+\texttt{tas-fw} & --- (no calibratable constant) & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Important caveat, carried forward from the previous report.}
+Calibration instances are a \emph{single} fixed Gaussian-mixture instance
+(\texttt{GaussianMixtureEnv}'s construction is deterministic given
+$N,K,d,\Delta$ --- there is no way to draw ``20 different instances,'' only
+20 independently-seeded noise draws of the one instance). The frozen
+constants above were validated against that one instance's own real budget
+regime, \emph{not} against every real grid point in Experiments~1--3.
+Section~\ref{sec:conclusions} shows this still matters directly:
+\texttt{kabc-sg}'s calibration does not fully generalize to the harder grid
+points/settings in either experiment below.
+
+\FloatBarrier
+\section{Results --- Experiment 1 (preliminary, 10-rep pilot)}
+
+Aggregated over all 14 grid points, 10 reps each (140 runs/algorithm, 1{,}120
+total rows):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+Algorithm & Stopped rate & Error rate & Mean ARI & Mean $\tau$ \\
+\midrule
+\texttt{kabc}          & 100.0\% &  0.0\% & 1.000 &  9{,}654 \\
+\texttt{unif-kkm-1x}   & 100.0\% &  0.0\% & 1.000 &  9{,}654 \\
+\texttt{unif-kkm-0.9x} & 100.0\% &  0.0\% & 1.000 &  8{,}668 \\
+\texttt{acb}           & 100.0\% & 11.4\% & 0.984 &  7{,}045 \\
+\texttt{kabc-sg}       &  68.6\% & 31.4\% & 0.881 & 79{,}380 \\
+\texttt{acb-0.9x}      &  25.0\% & 78.6\% & 0.247 &  5{,}224 \\
+\texttt{kabc-sg-0.9x}  &  14.3\% & 85.7\% & 0.458 & 37{,}321 \\
+\texttt{kabc-0.9x}     &   0.7\% & 99.3\% & 0.027 &  3{,}804 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.7\textwidth]{../results/figures/exp1_fig1_tau_vs_delta.png}
+\caption{Stopping budget $\tau$ vs.\ $\Delta$, \texttt{kabc}/\texttt{kabc-sg}/\texttt{acb}
+only, with the theoretical $\tau \propto s_*^{-2}$ bound overlaid (dashed).}
+\label{fig:exp1-fig1}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig2_tau_vs_d.png}
+\caption{$\tau$ vs.\ ambient dimension $d$.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig2b_tau_vs_N.png}
+\caption{$\tau$ vs.\ number of arms $N$.}
+\end{subfigure}
+\caption{Budget scaling along the two secondary sweep dimensions.}
+\label{fig:exp1-fig2}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.32\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig3_convergence_vs_delta.png}
+\caption{vs.\ $\Delta$}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.32\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig3b_convergence_vs_d.png}
+\caption{vs.\ $d$}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.32\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig3c_convergence_vs_N.png}
+\caption{vs.\ $N$}
+\end{subfigure}
+\caption{Convergence rate (fraction of reps with $\text{stopped}=\text{True}$), \texttt{kabc}/\texttt{kabc-sg}/\texttt{acb} only.}
+\label{fig:exp1-fig3}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.75\textwidth]{../results/figures/exp1_fig4_ari_vs_delta.png}
+\caption{ARI vs.\ $\Delta$, all 8 algorithm rows.}
+\label{fig:exp1-fig4}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig4b_ari_vs_d.png}
+\caption{ARI vs.\ $d$.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\includegraphics[width=\textwidth]{../results/figures/exp1_fig4c_ari_vs_N.png}
+\caption{ARI vs.\ $N$.}
+\end{subfigure}
+\caption{ARI along the two secondary sweep dimensions, all 8 algorithm rows.}
+\label{fig:exp1-fig4bc}
+\end{figure}
+
+\paragraph{Where \texttt{kabc-sg} struggles.} At $\Delta=1$ (the hardest
+separation), \texttt{kabc-sg} never converges within budget in this pilot
+(0/10 reps stopped) and its mean $\tau$ balloons to $277{,}440$ --- the
+doubling trick's ceiling at this $N,\delta$ --- while \texttt{kabc} converges
+every time at $\tau=30{,}840$. The same pattern recurs at the two hardest
+$d$ points ($d=50,100$): \texttt{kabc-sg} never converges (0/10 both), mean
+$\tau=277{,}440$ both times, while \texttt{kabc} converges every time at a
+small fraction of that budget ($14{,}100$). \texttt{acb} converges
+everywhere in this pilot but with real error: $11.4\%$ aggregate, concentrated
+at the hardest points.
+
+\paragraph{The \texttt{-0.9x} rows show real margin, not just noise.} Every
+base algorithm's ARI drops substantially at 90\% of its own realized
+$\tau$: \texttt{kabc} $1.000\to0.027$, \texttt{kabc-sg} $0.881\to0.458$,
+\texttt{acb} $0.984\to0.247$. This says that, at this pilot's scale (10
+reps), none of the three stopping rules carry much slack --- cutting to 90\%
+of the budget each rule itself decided it needed meaningfully hurts accuracy
+for all three, not just the already-fragile \texttt{kabc-sg}. \texttt{unif-kkm-0.9x}
+barely moves ($1.000\to$ effectively unchanged, since it is tied to
+\texttt{kabc}'s $\tau$, not its own, and 90\% of \texttt{kabc}'s ample budget
+is still plenty for non-adaptive kernel $k$-means at these easy-to-moderate
+grid points).
+
+\FloatBarrier
+\section{Results --- Experiment 2 (50-rep, current canonical grid)}
+\label{sec:results-exp2}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{../results/figures/exp2_fig0_headline_settings.png}
+\caption{The 6 settings' instance geometry, one panel each: \texttt{scale\_pair}
+and \texttt{moment\_matched\_mixture} panels are exact analytic densities
+(A vs.\ that setting's B); \texttt{ring\_blob} panels are real 2D sample
+scatters from \texttt{RingBlobEnv} itself.}
+\label{fig:exp2-fig0}
+\end{figure}
+
+Aggregated over all 6 settings, 50 reps each (300 runs/algorithm, 2{,}400
+total rows):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+Algorithm & Stopped rate & Error rate & Mean ARI & Mean $\tau$ \\
+\midrule
+\texttt{kabc}          & 100.0\% &   0.0\% & 1.000 &     33{,}430 \\
+\texttt{unif-kkm-1x}   & 100.0\% &   7.3\% & 0.987 &     33{,}430 \\
+\texttt{unif-kkm-0.9x} & 100.0\% &  10.0\% & 0.988 &     30{,}072 \\
+\texttt{kabc-sg}       &  83.0\% &  47.7\% & 0.680 &     35{,}659 \\
+\texttt{kabc-sg-0.9x}  &  42.0\% &  72.7\% & 0.495 &      8{,}309 \\
+\texttt{kabc-0.9x}     &  12.3\% &  87.7\% & 0.123 &     15{,}721 \\
+\texttt{acb}           &   0.0\% & 100.0\% & 0.000 & 1{,}326{,}538 \\
+\texttt{acb-0.9x}      &   0.0\% & 100.0\% & 0.000 & 1{,}193{,}823 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{../results/figures/exp2_fig1_budget_bars.png}
+\caption{Stopping budget $\tau$, one bar plot, 6 blocks (settings) $\times$
+4 bars (\texttt{kabc}, \texttt{kabc-sg}, \texttt{acb}, plus a
+\texttt{theoretical bound} bar --- the setting's formula-based
+\texttt{budget\_cap}, a single deterministic value with no error bar).}
+\label{fig:exp2-fig1}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{../results/figures/exp2_fig2_convergence_bars.png}
+\caption{Convergence rate, 6 blocks $\times$ 3 bars (\texttt{kabc}/\texttt{kabc-sg}/\texttt{acb} only).}
+\label{fig:exp2-fig2}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{../results/figures/exp2_fig3_ari_bars.png}
+\caption{ARI, 6 blocks $\times$ 8 bars (all algorithm rows).}
+\label{fig:exp2-fig3}
+\end{figure}
+
+\paragraph{ACB is exactly at its theoretical budget bound everywhere, never
+converging.} Figure~\ref{fig:exp2-fig1} shows \texttt{acb}'s bar coinciding
+with the grey \texttt{theoretical bound} bar in every one of the 6 blocks
+--- confirmed directly in the aggregate table ($\text{stopped}=0.0\%$,
+$\text{ARI}=0.000$ at every setting, not just on average). This is the
+expected, designed-for outcome: all 6 settings are same-mean by
+construction, so a mean-based method has no signal, spends its entire
+allotted budget every time, and always falls back to the graceful trivial
+partition (ARI exactly 0.0 by construction of the adjusted-for-chance
+formula).
+
+\paragraph{KABC-SG is family-dependent, and \texttt{moment\_matched\_mixture}
+is uniformly the hardest family.} \texttt{kabc-sg} converges well on
+\texttt{scale\_pair} ($\sigma_B{=}3$: 42\% converged but ARI 0.923 when it
+does; $\sigma_B{=}2$: 84\%, ARI 0.758) and \texttt{ring\_blob} (86--96\%
+converged, ARI 0.989--0.997), but its ARI collapses specifically on
+\texttt{moment\_matched\_mixture} (92--98\% converged, but ARI only
+0.179--0.234) --- it \emph{converges} confidently to a wrong-ish answer on
+this family far more than it fails to converge, the same
+confident-wrong-answer failure mode documented for this algorithm on real
+MovieLens data in the earlier (now-superseded) Experiment 3/4 report.
+\texttt{kabc}, by contrast, is at ARI $1.000$ on every one of the 6 settings
+individually, not just on average.
+
+\paragraph{The \texttt{-0.9x} rows again show real margin, most sharply for
+\texttt{kabc} itself.} \texttt{kabc}'s own ARI at 90\% of its realized
+$\tau$ drops to just $0.123$ aggregate --- markedly worse than Experiment 1's
+already-weak $0.027$-at-90\%-margin story is not directly comparable in
+scale, but the direction is the same: KABC's stopping rule is not leaving
+much slack on this benchmark. \texttt{unif-kkm-1x}/\texttt{-0.9x}, both
+tied to \texttt{kabc}'s own (ample, MMD-driven) $\tau$, reach ARI
+$0.987$/$0.988$ --- close to but not quite matching \texttt{kabc}'s perfect
+$1.000$, suggesting active/adaptive selection's edge over naive uniform
+sampling at a matched budget is real here, but modest in this aggregate
+view (see the per-setting figures for where it is largest).
+
+\FloatBarrier
+\section{Results --- Experiment 3 (pending)}
+\label{sec:results-exp3}
+
+\begin{center}
+\fbox{\begin{minipage}{0.85\textwidth}
+\centering
+\vspace{0.5em}
+\textbf{Placeholder --- results pending a fresh 50-rep production run.}\\[0.3em]
+\small The previously saved \texttt{results/exp3\_*/results.parquet} predate
+the \texttt{-0.75x}$\to$\texttt{-0.9x} algorithm-roster rename and are not
+compatible with the current config (Section~\ref{sec:setup-exp2}'s sibling
+setup section above describes the design this run will use). This section
+will be filled in with the same structure as Experiments 1--2 above: an
+aggregate table, then the four bar-plot figures below, then a narrative.
+\vspace{0.5em}
+\end{minipage}}
+\end{center}
+
+\begin{figure}[h]
+\centering
+\fbox{\begin{minipage}{0.85\textwidth}\centering\vspace{3em}
+\textit{Figure pending: mean ARI ($\pm$ std), 3 versions $\times$ 6 algorithms}\\
+(\texttt{exp3\_fig1\_ari\_bars.png})
+\vspace{3em}\end{minipage}}
+\caption{Placeholder for the ARI bar plot.}
+\label{fig:exp3-fig1}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\fbox{\begin{minipage}{0.85\textwidth}\centering\vspace{3em}
+\textit{Figure pending: mean $\tau$ ($\pm$ std, log scale), 3 versions $\times$ 6 algorithms}\\
+(\texttt{exp3\_fig2\_tau\_bars.png})
+\vspace{3em}\end{minipage}}
+\caption{Placeholder for the stopping-budget bar plot.}
+\label{fig:exp3-fig2}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\fbox{\begin{minipage}{0.85\textwidth}\centering\vspace{3em}
+\textit{Figure pending: mean wall-clock/rep ($\pm$ std, log scale), 3 versions $\times$ 6 algorithms}\\
+(\texttt{exp3\_fig3\_wallclock\_bars.png})
+\vspace{3em}\end{minipage}}
+\caption{Placeholder for the wall-clock bar plot.}
+\label{fig:exp3-fig3}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\fbox{\begin{minipage}{0.85\textwidth}\centering\vspace{3em}
+\textit{Figure pending: convergence rate ($\pm$ std), 3 versions $\times$ 6 algorithms}\\
+(\texttt{exp3\_fig4\_convergence\_bars.png})
+\vspace{3em}\end{minipage}}
+\caption{Placeholder for the convergence-rate bar plot.}
+\label{fig:exp3-fig4}
+\end{figure}
+
+\paragraph{What to expect, carried forward from the prior (superseded, old
+naming) Experiment 3/4 run as a directional prior only --- to be confirmed,
+not assumed, by the fresh run.} On the prior run's closest analogue to
+\texttt{exp3\_1} (tight gap, MMD-maximizing), \texttt{kabc} reached mean ARI
+$0.942$ where \texttt{acb} scored exactly $0.000$ (mean-blind, $0\%$
+stopped); \texttt{kabc-sg} (since dropped from this experiment) lagged
+badly (ARI $0.464$); \texttt{tas-fw} matched or exceeded \texttt{kabc}'s
+ARI ($1.000$) but at $\sim\!800$--$900$s/rep vs.\ \texttt{kabc}'s
+sub-second cost. Whether this pattern holds at the current thresholds
+(REVISION 4: all three versions' mean-gap tolerance raised, budget\_cap
+lowered to $15{,}000$) and the new \texttt{kabc-0.9x} row is exactly what
+the pending run will show.
+
+\FloatBarrier
+\section{Inferences and Conclusions}
+\label{sec:conclusions}
+
+\paragraph{6.1 KABC's empirical error remains exactly zero across both
+available experiments, at every individual grid point, not just in
+aggregate.} Across all 14 Experiment~1 grid points and all 6 Experiment~2
+settings, \texttt{kabc}'s error rate is $0.0\%$ and its ARI is $1.000$ ---
+checked per-point/per-setting, not just as an aggregate that could hide a
+few bad cells. This holds at both pilot scale (Experiment~1, 10 reps) and
+production scale (Experiment~2, 50 reps), which is reassuring: the earlier,
+smaller pilot's perfect-KABC finding was not a small-sample artifact that
+washed out at 50 reps.
+
+\paragraph{6.2 KABC-SG's fragility (documented in the previous report) is
+confirmed again under the redesigned grids, and is now clearly
+family-/point-dependent rather than uniform.} In Experiment~1,
+\texttt{kabc-sg} fails to converge at all at the hardest points ($\Delta=1$,
+$d\in\{50,100\}$: $0/10$ reps stopped, $\tau$ pinned at the doubling
+trick's $277{,}440$ ceiling) while converging easily elsewhere. In
+Experiment~2, the pattern is different but equally sharp: \texttt{kabc-sg}
+converges \emph{often} on \texttt{moment\_matched\_mixture} ($92$--$98\%$)
+but its ARI there is only $0.18$--$0.23$ --- a confident-wrong-answer
+failure mode, not a budget-exhaustion one, distinct from Experiment~1's
+failure mode on the same algorithm. Both are consistent with the mechanism
+established during calibration (\texttt{docs/experiments.md} \S0.2):
+\texttt{kabc-sg}'s single, non-adaptive threshold cannot tighten itself
+against a specific instance's own variance/shape structure the way
+\texttt{kabc}'s per-pair empirical threshold does.
+
+\paragraph{6.3 ACB is not merely imprecise on same-mean data --- it is
+exactly, provably blind, and this shows up identically at every one of
+Experiment~2's 6 settings.} \texttt{acb}/\texttt{acb-0.9x}'s ARI is exactly
+$0.000$ and stopped rate exactly $0\%$ at every single setting individually
+(not just in the 6-setting aggregate), with $\tau$ landing exactly on the
+theoretical \texttt{budget\_cap} bound each time (Figure~\ref{fig:exp2-fig1}).
+This is the sharpest possible confirmation of the paper's motivating claim
+on synthetic data: a mean-based method has zero signal when clusters share
+a mean, regardless of how much budget it is given or how the shape/geometry
+of the mismatch varies.
+
+\paragraph{6.4 The \texttt{-0.9x} self-comparison rows show real,
+non-trivial margin for every algorithm tested, in both experiments ---
+none of the three stopping rules examined here are ``mostly slack.''}
+\texttt{kabc}'s own ARI at 90\% of its realized budget drops to $0.027$
+(Experiment~1) and $0.123$ (Experiment~2) --- far from the $1.000$ its full
+budget achieves. \texttt{kabc-sg} and \texttt{acb} show the same direction
+of effect. This is a genuinely new finding relative to the previous
+report's restricted-budget pass (which used a fixed $0.25\times$ multiplier
+applied uniformly, rather than each algorithm's own realized $\tau$): even
+a modest, self-relative 10\% cut meaningfully hurts every adaptive method
+tested so far, suggesting these stopping rules are calibrated close to the
+minimum budget actually needed, not with large unused margin.
+
+\paragraph{6.5 Active/adaptive selection's edge over naive uniform sampling
+at a matched budget is real but modest, on the settings tested so far.}
+\texttt{unif-kkm-1x} (tied to \texttt{kabc}'s own $\tau$) reaches ARI
+$1.000$ in Experiment~1 and $0.987$ in Experiment~2, both very close to
+\texttt{kabc}'s own $1.000$. This says that, once \texttt{kabc} has decided
+how much budget a problem needs, spending that same budget \emph{without}
+kabc's adaptive arm-selection (just uniform pulls + kernel $k$-means) is
+already most of the way to as good --- the advantage of adaptivity here
+shows up more in \emph{how much budget is needed at all} (the $\tau$
+figures) than in accuracy at a budget already known to be sufficient.
+
+\paragraph{6.6 Open items for the rework.}
+\begin{itemize}
+  \item Experiment~3's results are entirely pending (Section~\ref{sec:results-exp3})
+    --- a 50-rep run under the current \texttt{-0.9x} naming and REVISION 4
+    thresholds is the single largest gap in this report.
+  \item Experiment~1 is still at pilot scale (10 reps); the canonical
+    20-rep first pass (\texttt{configs/exp1.yaml}) has not yet been run to
+    completion and would give tighter error bars, especially at the hard
+    points ($\Delta=1$, $d\in\{50,100\}$) where this pilot's std.\ devs.\
+    are already visibly large on only 10 reps.
+  \item \texttt{kabc-sg}'s and \texttt{acb}'s calibrated constants
+    (Section~\ref{sec:calibration}) were validated against a single fixed
+    calibration instance and are not re-validated against either
+    experiment's actual hard points here --- the error/ARI numbers above
+    should be read as ``as calibrated in this repo,'' not as a claim about
+    the underlying algorithms' theoretical guarantees.
+  \item This report does not yet include a per-setting/per-grid-point
+    breakdown table (only the aggregate table and the figures) --- worth
+    adding once Experiment~3's data lands, so all three experiments get the
+    same level of detail.
+\end{itemize}
+
+\begin{thebibliography}{9}
+
+\bibitem{kabc2026}
+Thuot, Vogt, Ghoshdastidar, Verzelen.
+\textit{Kernel-based Active Clustering of Bandit Arms}.
+arXiv:2601.07535, 2026.
+
+\bibitem{acb2024}
+Thuot, Carpentier, Giraud, Verzelen.
+\textit{Active clustering with bandit feedback}.
+arXiv:2406.11485, 2024.
+
+\bibitem{tasfw2024}
+Yavas, Huang, Tan, Scarlett.
+\textit{A General Framework for Clustering and Distribution Matching with Bandit Feedback}.
+arXiv:2409.05072, 2024.
+
+\end{thebibliography}
+
+\end{document}

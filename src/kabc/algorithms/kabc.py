@@ -101,7 +101,7 @@ STOP_REASON_DEGENERATE_PILOT = "degenerate_pilot"
 # of sequential calls, not a simultaneous allocation multiplier.
 MEMORY_GUARD_MATRICES_PER_CALL = 3  # Kxx, Kyy, Kxy alive together in mmd2_plugin (the binding case; rkhs_variance's 1 matrix is strictly smaller)
 MEMORY_GUARD_SAFETY_FACTOR = 4  # headroom for sklearn/BLAS transient buffers (e.g. rbf_kernel's internal squared-distance intermediates) beyond the 3 persistent arrays, and for imprecise GC timing
-MEMORY_GUARD_N_WORKERS = 11  # matches this repo's own joblib Parallel(n_jobs=-2) convention (run_experiment.py, calibrate_constants.py) on a 12-core machine -- every concurrent worker could hit this same peak at once
+MEMORY_GUARD_N_WORKERS = 11  # matches scripts/calibrate_constants.py's own joblib Parallel(n_jobs=-2) convention on a 12-core machine -- every concurrent worker could hit this same peak at once. Deliberately >= the 10 workers each dedicated experiment script (run_experiment1/2/3.py) actually uses (configs/expN.yaml's n_jobs: 10), so this stays a safe/conservative bound for either caller, not an exact match to both.
 MEMORY_GUARD_SAFE_TOTAL_BYTES = 8 * 1024**3  # 8 GiB: comfortable headroom under a 16GB target, leaving room for the OS, the Python/numpy baseline footprint, and every other array each worker holds besides the Gram matrices themselves
 
 

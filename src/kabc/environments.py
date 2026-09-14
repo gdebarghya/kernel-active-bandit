@@ -182,7 +182,7 @@ def _load_ratings(data_dir: Path) -> pd.DataFrame:
     if not ratings_path.exists():
         raise FileNotFoundError(
             f"{ratings_path} not found. Run `make data` to fetch/verify MovieLens-1M "
-            f"before constructing MovieLensEnv."
+            f"before building data/ml-1m-207/ (scripts/build_movielens_207.py)."
         )
     return pd.read_csv(
         ratings_path,
@@ -200,7 +200,7 @@ def _load_movie_titles(data_dir: Path) -> dict[int, str]:
     if not movies_path.exists():
         raise FileNotFoundError(
             f"{movies_path} not found. Run `make data` to fetch/verify MovieLens-1M "
-            f"before constructing MovieLensEnv."
+            f"before building data/ml-1m-207/ (scripts/build_movielens_207.py)."
         )
     movies = pd.read_csv(
         movies_path,
@@ -219,7 +219,8 @@ def _movie_rating_distributions(
 ) -> tuple[dict[int, np.ndarray], dict[int, float]]:
     """Per-movie empirical rating distribution p_m on {1,...,5} and mean(p_m).
 
-    Only movies with >= min_ratings total ratings are retained (Exp 3 step 1).
+    Only movies with >= min_ratings total ratings are retained (matches
+    `scripts/build_movielens_207.py`'s own filter).
     """
     counts = ratings.groupby("movie_id")["rating"].value_counts().unstack(fill_value=0)
     counts = counts.reindex(columns=[1, 2, 3, 4, 5], fill_value=0)
@@ -227,7 +228,7 @@ def _movie_rating_distributions(
     if len(retained) < 2:
         raise ValueError(
             f"only {len(retained)} movie(s) have >= {min_ratings} ratings; "
-            f"need at least 2 to run prototype selection"
+            f"need at least 2 to sample a pair from"
         )
     probs = retained.div(retained.sum(axis=1), axis=0)
     means = probs @ np.arange(1, 6, dtype=float)
@@ -239,7 +240,7 @@ def _movie_rating_distributions(
 def _prototype_bandwidth(
     ratings: pd.DataFrame, retained_movie_ids, sample_size: int, seed: int
 ) -> float:
-    """Median-heuristic bandwidth on ratings (Exp 3 step 1), from a fixed-seed
+    """Median-heuristic bandwidth on ratings, from a fixed-seed
     subsample of the retained movies' pooled ratings (the full pool is ~1M
     rows -- infeasible for an O(n^2) pairwise-distance median). Ratings only
     take 5 distinct values, so the median stabilizes at far smaller n."""
@@ -255,8 +256,8 @@ def compute_pairwise_mmd2(movie_probs: dict[int, np.ndarray], bandwidth: float) 
     {1,...,5} -- algebraically identical to kernels.mmd2_plugin on the raw
     rating samples (grouping the double sum over samples by rating value),
     but O(1) per pair instead of O(n^2), needed since all pairs among
-    hundreds of candidate movies are considered (Experiment 3's prototype
-    selection, Experiment 4's per-rep pair sampling).
+    hundreds of candidate movies are considered (Experiment 3's per-rep pair
+    sampling).
 
     Returns (movie_ids in row/column order, the (M,M) MMD^2 matrix; diagonal
     set to -inf since a movie's MMD^2 to itself is never a meaningful
@@ -273,100 +274,10 @@ def compute_pairwise_mmd2(movie_probs: dict[int, np.ndarray], bandwidth: float) 
     return movie_ids, mmd2
 
 
-def _select_prototypes(
-    movie_probs: dict[int, np.ndarray],
-    movie_means: dict[int, float],
-    K: int,
-    mean_gap_tol: float,
-    bandwidth: float,
-) -> list[int]:
-    """Exp 3 steps 2-3: pick K movie prototypes."""
-    if K < 2:
-        raise ValueError(f"K must be >= 2 (need at least the polarizing-vs-consensus pair), got {K!r}")
-
-    movie_ids, mmd2 = compute_pairwise_mmd2(movie_probs, bandwidth)
-    means = np.array([movie_means[mid] for mid in movie_ids])  # (M,)
-
-    mean_gap = np.abs(means[:, None] - means[None, :])
-    eligible_mmd2 = np.where(mean_gap <= mean_gap_tol, mmd2, -np.inf)
-    if not np.any(np.isfinite(eligible_mmd2)):
-        raise ValueError(
-            f"no movie pair has |mean gap| <= {mean_gap_tol}; cannot select the "
-            f"polarizing-vs-consensus pair (Exp 3 step 2)"
-        )
-    m1, m2 = np.unravel_index(np.argmax(eligible_mmd2), eligible_mmd2.shape)
-
-    selected = [int(m1), int(m2)]
-    remaining = [i for i in range(len(movie_ids)) if i not in selected]
-    for _ in range(K - 2):
-        if not remaining:
-            raise ValueError(
-                f"only {len(selected)} eligible movie(s) available; cannot select K={K} prototypes"
-            )
-        min_dist_to_selected = mmd2[np.ix_(remaining, selected)].min(axis=1)
-        best = remaining[int(np.argmax(min_dist_to_selected))]
-        selected.append(best)
-        remaining.remove(best)
-
-    return [movie_ids[i] for i in selected]
-
-
-class MovieLensEnv(Environment):
-    """Exp 3: K movie prototypes from MovieLens-1M; arms resample with replacement
-    from their prototype movie's rating pool. Ground truth = prototype identity.
-
-    Prototype selection (deterministic given the data; only the bandwidth
-    subsample uses a fixed internal seed) follows docs/experiments.md's
-    Exp 3 "Prototype selection" steps 1-4. The default K, arms_per_prototype,
-    min_ratings and mean_gap_tol match the doc's stated values; a future
-    experiment runner reading configs/*.yaml should override them explicitly
-    rather than this module hardcoding config-driven values.
-    """
-
-    def __init__(
-        self,
-        data_dir: str | Path = "data/ml-1m",
-        K: int = 4,
-        arms_per_prototype: int = 10,
-        min_ratings: int = 1000,
-        mean_gap_tol: float = 0.05,
-        bandwidth_sample_size: int = 5000,
-        bandwidth_seed: int = 0,
-    ):
-        if arms_per_prototype < 1:
-            raise ValueError(f"arms_per_prototype must be >= 1, got {arms_per_prototype!r}")
-
-        data_dir = Path(data_dir)
-        ratings = _load_ratings(data_dir)
-        movie_probs, movie_means = _movie_rating_distributions(ratings, min_ratings)
-        bandwidth = _prototype_bandwidth(
-            ratings, movie_probs.keys(), bandwidth_sample_size, bandwidth_seed
-        )
-        prototype_movie_ids = _select_prototypes(movie_probs, movie_means, K, mean_gap_tol, bandwidth)
-        titles = _load_movie_titles(data_dir)
-
-        self.K = K
-        self.arms_per_prototype = arms_per_prototype
-        self.n_arms = K * arms_per_prototype
-        self.true_partition = _balanced_partition(self.n_arms, K)
-        self.prototype_movie_ids = prototype_movie_ids
-        self.prototype_titles = [titles[mid] for mid in prototype_movie_ids]
-        self.prototype_bandwidth = bandwidth
-        self.prototype_pools = [
-            ratings.loc[ratings["movie_id"] == mid, "rating"].to_numpy(dtype=float)
-            for mid in prototype_movie_ids
-        ]
-
-    def pull(self, arm_index: int, rng: np.random.Generator) -> float:
-        cluster = self._validate_arm_index(arm_index)
-        return float(rng.choice(self.prototype_pools[cluster]))
-
-
 class MovieLensPairEnv(Environment):
-    """Exp 4: a single, arbitrary movie pair (K=2), not MovieLensEnv's
-    greedy K-prototype selection. Takes rating pools directly rather than
-    loading/filtering ratings.dat itself -- Experiment 4 samples a fresh
-    pair every rep from a pre-loaded 207-movie table
+    """Experiment 3: a single, arbitrary movie pair (K=2). Takes rating pools
+    directly rather than loading/filtering ratings.dat itself -- Experiment 3
+    samples a fresh pair every rep from a pre-loaded 207-movie table
     (`scripts/build_movielens_207.py`'s `data/ml-1m-207/`), so pool lookup
     happens once at setup, not per rep.
     """

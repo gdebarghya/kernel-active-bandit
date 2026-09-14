@@ -1,6 +1,3 @@
-Good catch — those two got lost in the detour. Let's create them now, same method as before.
-.gitignore — controls what git tracks (keeps data/results/cruft out of version control):
-bashcat > .gitignore << 'EOF'
 # data & results (regenerable / third-party)
 data/
 results/
@@ -19,4 +16,12 @@ venv/
 
 # os cruft
 .DS_Store
-EOFresults/figures/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+
+# local Claude settings (machine-specific, not shared)
+.claude/

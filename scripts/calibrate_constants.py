@@ -11,19 +11,29 @@ DEVIATION FROM THE DOC'S LITERAL PROTOCOL (200 runs / 15 bisection
 iterations): reduced to 100 runs and 8 iterations for compute-cost reasons
 -- see docs/experiments.md section 0.2 for the recorded reasoning. Runs
 within a single empirical-error evaluation are parallelized
-(joblib.Parallel, n_jobs=-2, matching run_experiment.py's own pattern), each
-capped to a single BLAS thread (env vars below + threadpoolctl) to avoid the
-n_jobs-way oversubscription that otherwise contends 11 multi-threaded worker
-processes against 12 physical cores. The search also no longer re-verifies
-the theoretical constant (c_cal=1.0) empirically before bisecting -- see
+(joblib.Parallel, n_jobs=-2, i.e. all-but-one core), each capped to a single
+BLAS thread (env vars below + threadpoolctl) to avoid the n_jobs-way
+oversubscription that otherwise contends 11 multi-threaded worker processes
+against 12 physical cores. The search also no longer re-verifies the
+theoretical constant (c_cal=1.0) empirically before bisecting -- see
 `_binary_search_c_cal`'s docstring: that single check was ~79 of kabc's
 ~100-minute calibration wall-clock, spent reconfirming a constant already
-guaranteed safe by the algorithm's own proof (Eq. 6). The search interval
-itself is additionally capped to [0.01, 0.6] (SEARCH_HI), not [0.01, 1.0]:
-real per-run timing showed cost is flat/cheap below ~0.5 and explodes
-specifically near 1.0, so an uncapped bisection could repeatedly re-walk
-into that expensive region while narrowing from above. If nothing in
-[0.01, 0.6] passes, that is reported and recorded as `null` in
+guaranteed safe by the algorithm's own proof (Eq. 6).
+
+The search interval `[LO, SEARCH_HI]` went through several stages before
+settling at its CURRENT value, `[0.1, 1.0]` (see the `LO, SEARCH_HI =`
+assignment below) -- docs/experiments.md section 0.2 records the full
+history: it was first capped to `[0.01, 0.6]` (kabc/kabc-sg) or
+`[0.01, 0.95]` (acb) purely to dodge a cost cliff near `const=1.0` under a
+since-abandoned "generous" calibration budget_cap; once calibration was
+corrected to use the REAL, formula-derived budget_cap (matching a real
+experiment's own budget), that cliff mostly disappeared (kabc's cost near
+1.0 dropped from ~520s/run to ~117s/run) and `SEARCH_HI` was widened back
+to `1.0`; `LO` was separately raised from `0.01` to `0.1` for a different,
+non-cost reason -- an unstable discontinuity found just below `~0.02` where
+a run avoids reporting a wrong partition only by exhausting its budget
+first, not genuine threshold resolution. If nothing in the current
+`[LO, SEARCH_HI]` passes, that is reported and recorded as `null` in
 configs/calibration.yaml with an explanatory comment (distinct from tas-fw's
 `null`) -- never silently papered over by falling back to an unverified
 expensive candidate. Every bisection iteration also prints its own
@@ -34,8 +44,8 @@ family, Delta at mid-grid)" (Delta=3, Exp 1's own `base` value and the middle
 of its sweep {1,1.5,2,3,4,6}): `GaussianMixtureEnv.__init__` takes no seed
 and no other source of randomness -- its cluster means are a deterministic
 closed-form function of (N,K,d,Delta,sigma) (see environments.py), matching
-how run_experiment.py/configs/exp1.yaml already use it (one fixed instance
-per grid point, not a per-rep-randomized one). So the 20 "instance seeds"
+how scripts/run_experiment1.py/configs/exp1.yaml already use it (one fixed
+instance per grid point, not a per-rep-randomized one). So the 20 "instance seeds"
 below (`SEARCH_SEED_BASE + i for i in range(N_INSTANCES)`) do NOT produce 20
 different instances -- they build the SAME instance 20 times; each seed only
 selects a different pull-noise RNG stream inside `_run_single`. The doc's
@@ -99,9 +109,19 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
+import joblib
 import numpy as np
 import threadpoolctl
 from joblib import Parallel, delayed
+
+# SANDBOX: joblib's default 'loky' backend calls os.sysconf('SC_SEM_NSEMS_MAX')
+# at worker-pool startup to size its semaphore pool -- blocked under this
+# repo's dev sandbox (a syscall-level restriction, unrelated to the
+# filesystem/network permissions the sandbox otherwise governs). 'multiprocessing'
+# (fork-based) doesn't call it and was confirmed to run this repo's scripts
+# end-to-end under the sandbox; every Parallel(...) call below has no explicit
+# backend=, so this sets the process-wide default once, for all of them.
+joblib.parallel_config(backend="multiprocessing")
 
 from kabc.algorithms.acb import _fit as _acb_fit
 from kabc.algorithms.kabc import _fit as _kabc_fit
@@ -195,7 +215,7 @@ def _real_budget_cap() -> int:
     """PROTOCOL CORRECTION (see docs/experiments.md section 0.2): calibration
     must validate error under the SAME budget regime real experiments will
     actually run at, not an artificially generous one. This is the exact
-    formula `run_experiment.py`'s `_resolve_budget_cap` uses for a
+    formula `scripts/common.py`'s `_resolve_budget_cap` uses for a
     `s_star_formula` grid point (constant=200, s_star_sq via
     `estimate_s_star_sq`) -- NO extra margin.
 
@@ -237,9 +257,9 @@ def _run_single(fit_fn, instance_seed: int, rep: int, budget_cap: int, fit_kwarg
 
 def _empirical_error(fit_fn, seeds: list[int], budget_cap: int, reps_per_instance: int, fit_kwargs: dict) -> float:
     """Empirical error over `len(seeds) * reps_per_instance` runs, parallel
-    across all of them (matches run_experiment.py's own Parallel(n_jobs=-2)
-    pattern) -- these runs are independent (fixed instance/rep/seed grid),
-    so there's no reason to pay for them one at a time on a single core."""
+    across all of them (`Parallel(n_jobs=-2)`, i.e. all-but-one core) --
+    these runs are independent (fixed instance/rep/seed grid), so there's no
+    reason to pay for them one at a time on a single core."""
     jobs = [
         delayed(_run_single)(fit_fn, instance_seed, rep, budget_cap, fit_kwargs)
         for instance_seed in seeds

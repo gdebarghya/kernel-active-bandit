@@ -29,13 +29,15 @@ run `make data` to auto-download it.
 ## Usage
 
 ```bash
-make data        # fetch/verify MovieLens-1M
-make calibrate    # freeze practical threshold constants
-make smoke        # quick sanity run, all 3 experiments, reduced grid
-make exp1         # Experiment 1: Gaussian mixtures
-make exp2         # Experiment 2: same-mean, different-shape instances
-make exp3         # Experiment 3: MovieLens
-make test         # run test suite
+make data           # fetch/verify MovieLens-1M
+make movielens-207  # build data/ml-1m-207/ (the >=1000-rating movie pool exp3 samples pairs from)
+make calibrate       # freeze practical threshold constants
+make smoke           # quick sanity run, experiments 1-2, reduced grid
+make smoke-exp3      # separate, slower sanity run for experiment 3 (includes tas-fw)
+make exp1            # Experiment 1: Gaussian mixtures
+make exp2            # Experiment 2: same-mean, different-shape instances
+make exp3            # Experiment 3: MovieLens random pairs
+make test            # run test suite
 ```
 
 Notebooks in `notebooks/` load results from `results/*.parquet` and produce

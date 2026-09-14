@@ -2,9 +2,10 @@
 Monte Carlo estimator of the signal-to-noise ratio s*^2 (Eq. 7,
 arXiv:2601.07535) used to size budget_cap for synthetic experiments.
 
-Reused by scripts/run_experiment.py (per-grid-point budget_cap, per
-docs/experiments.md section 0.4) and scripts/calibrate_constants.py (a
-generous fixed budget_cap for calibration runs, independent of the c_cal
+Reused by scripts/common.py's `_resolve_budget_cap` (per-grid-point
+budget_cap, per docs/experiments.md section 0.4, shared by the
+run_experiment1/2/3.py dedicated scripts) and scripts/calibrate_constants.py
+(a generous fixed budget_cap for calibration runs, independent of the c_cal
 candidate under test).
 """
 
