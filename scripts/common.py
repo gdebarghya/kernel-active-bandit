@@ -76,8 +76,14 @@ def _load_c_cal() -> dict[str, float | None]:
     with open(CALIBRATION_PATH) as f:
         raw = yaml.safe_load(f)["c_cal"]
     c_cal = {k: (v.get("value") if v else None) for k, v in raw.items()}
+    # tas-fw and acb-gaussian have no calibratable constant at all -- expected
+    # null, not a "forgot to run make calibrate" warning (see their own
+    # entries in configs/calibration.yaml). acb-gaussian additionally never
+    # even reads _C_CAL (see kabc.algorithms.acb_gaussian's CALIBRATION
+    # note) -- it's listed here purely so this loader doesn't warn about it.
+    EXPECTED_NULL = {"tas-fw", "acb-gaussian"}
     for algo_id, value in c_cal.items():
-        if value is None and algo_id != "tas-fw":  # tas-fw has no calibratable constant at all -- expected null
+        if value is None and algo_id not in EXPECTED_NULL:
             print(f"WARNING: c_cal[{algo_id!r}] is null -- this run will use its uncalibrated default (const=1.0)")
     return c_cal
 

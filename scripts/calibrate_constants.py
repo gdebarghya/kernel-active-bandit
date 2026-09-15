@@ -386,6 +386,19 @@ def _render_yaml(results: dict) -> str:
         "    # tas_fw.py consumes this value today. Kept for a possible future\n"
         "    # modification (e.g. scaling beta(t,delta) down empirically).\n"
     )
+    acb_gaussian_comment = (
+        "    # NOT a \"not yet calibrated\" placeholder like tas-fw above -- this is a\n"
+        "    # deliberate, permanent, by-design absence: kabc.algorithms.acb_gaussian\n"
+        "    # (arXiv:2406.11485 Appendix A's Gaussian-specialized, non-adaptive ACB\n"
+        "    # variant) has NO leading constant anywhere in its formulas to\n"
+        "    # calibrate. Every quantity (n_max via a chi-squared quantile; I/J via a\n"
+        "    # normal quantile beta and a Monte-Carlo product-quantile alpha) is an\n"
+        "    # EXACT delta-level quantile of the statistic's true finite-sample\n"
+        "    # distribution, not a concentration-inequality bound with slack to\n"
+        "    # tighten -- see acb_gaussian.py's own CALIBRATION note. `make calibrate`\n"
+        "    # writes this exact block itself (scripts/calibrate_constants.py) and\n"
+        "    # always will -- this is not a hand-edit exception to the rule above.\n"
+    )
     # Distinguishes "the capped [LO,SEARCH_HI] search genuinely found nothing
     # safe" (a real, informative negative result) from tas-fw's "never had a
     # constant to search for in the first place" -- both render as `null`,
@@ -428,6 +441,7 @@ def _render_yaml(results: dict) -> str:
         f"{block('kabc-sg', results.get('kabc-sg'), null_reason=search_failed_reason)}"
         f"{block('acb', results.get('acb'), acb_comment, null_reason=search_failed_reason)}"
         f"{block('tas-fw', None, tas_fw_comment)}"
+        f"{block('acb-gaussian', None, acb_gaussian_comment)}"
     )
 
 
@@ -443,6 +457,7 @@ def main() -> None:
         ),
     }
     print("Skipping tas-fw: no calibratable constant in the current tas_fw.py (see module docstring).")
+    print("Skipping acb-gaussian: no calibratable constant by design (see acb_gaussian.py's CALIBRATION note).")
 
     with open(OUTPUT_PATH, "w") as f:
         f.write(_render_yaml(results))

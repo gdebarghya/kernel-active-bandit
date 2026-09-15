@@ -10,16 +10,142 @@ Language: Python. One Jupyter notebook per experiment; shared logic in `src/`.
 
 | ID | Algorithm | Source | Notes |
 |----|-----------|--------|-------|
-| `kabc` | KABC, variance-aware threshold (Wolfer–Alquier style) | our paper | main method |
-| `kabc-sg` | KABC, kernel-uniform sub-Gaussian threshold (Tolstikhin style) | our paper, Discussion | ablation |
+| `kabc` | KABC, variance-aware threshold (Eq. 6, builds on Wolfer & Alquier, "Variance-aware estimation of kernel mean embedding," JMLR 26(57):1–48, 2025) | our paper | main method |
+| `kabc-sg` | KABC, kernel-uniform sub-Gaussian threshold (Discussion section ablation, substitutes Tolstikhin, Sriperumbudur & Muandet, "Minimax estimation of kernel mean embeddings," JMLR 18(86):1–47, 2017, Prop. A.1) | our paper, Discussion | ablation |
 | `kabc-oracle` | Non-adaptive CLUSTER(n*, δ) with oracle n* | our paper | measures price of adaptivity (doubling trick) |
-| `acb` | ACB (SRI + ADC), mean-based | Thuot et al. 2024 (arXiv 2406.11485) | re-implement; shared codebase style |
+| `acb` | ACB\* (Algorithm 2), adaptive, mean-based (SRI + ADC) | Thuot et al. 2024 (arXiv 2406.11485) | re-implement; shared codebase style |
+| `acb-gaussian` | ACB (Algorithm 1), Gaussian-specialized non-adaptive variant (Appendix A) — Δ, θ known | Thuot et al. 2024 (arXiv 2406.11485), Appendix A | Experiment 1 ONLY; no calibration (see below); NOT a generic registry entry |
 | `tas-fw` | Track-and-Stop + Frank-Wolfe, finite alphabet | Yavas et al. (arXiv 2409.05072) | small instances only (N ≤ 20); Experiment 3 ONLY, not Exp-1 — see note there |
 | `unif-kkm` | Uniform sampling (n per arm) + kernel k-means | folklore baseline | sweep n; non-adaptive, fixed-budget |
 
 Design rule: every algorithm implements a common interface
 `fit(env, delta, budget_cap, rng) -> Result(partition, tau, stopped, history)`.
-Environments implement `pull(arm_index, rng) -> sample`.
+Environments implement `pull(arm_index, rng) -> sample`. `acb-gaussian` is
+the one exception noted in the table above: it matches this signature in
+call SHAPE only, since Δ and θ are read directly off `env`
+(`GaussianMixtureEnv`-only attributes) rather than estimated — see
+`src/kabc/algorithms/acb_gaussian.py`'s own module docstring for the full
+justification and its explicit non-oracle-cheat framing, and
+`docs/results_exp1_exp2_exp3.tex`'s Baselines section for the paper-facing
+statement of the same.
+
+**`acb-gaussian` added (2026-09-15): the ACB paper's own Gaussian-
+specialized, non-adaptive variant (Appendix A), for Experiment 1 only.**
+Beyond the main-text `acb` (ACB\*, Algorithm 2, adaptive, Δ\*/θ\* unknown),
+the paper's own Appendix A describes a SEPARATE variant used for its own
+Figure 1 numerical experiment (the one reporting ≤1% error at δ=0.1):
+Algorithm 1 (non-adaptive, Δ and θ assumed known), with every
+concentration-inequality-derived constant (Eq. 9-13's `c1`-`c5`) replaced
+by an EXACT δ-level quantile (`n_max` via a χ² quantile; `I`/`J` via a
+normal quantile `β` and a Monte-Carlo product-quantile `α`) — see
+`src/kabc/algorithms/acb_gaussian.py`'s module docstring for the exact
+formulas, quoted directly from a full read of the rendered PDF (all 50
+pages, including Appendix A/C), same verification standard as
+`tas_fw.py`'s own formula citations. Implemented as a NINTH, independent
+row in Experiment 1's algorithm roster (`configs/exp1.yaml`), with no
+`-0.5x` self-comparison counterpart (not requested) and, deliberately, NO
+calibrated constant — see `configs/calibration.yaml`'s own `acb-gaussian`
+entry: every quantity here is an exact quantile of a known finite-sample
+distribution, not a proof-derived bound with slack to tighten, so `make
+calibrate` explicitly skips it by design, not by omission. It reads
+Δ, θ, σ directly from the `GaussianMixtureEnv` instance rather than
+estimating them from pulled data — legitimate specifically for Experiment 1
+(these values are literally what the environment was constructed from, in
+the same sense `N`/`K`/`d` already are known to every algorithm here), but
+this DOES mean `acb-gaussian` is evaluated with privileged information the
+other baselines don't get, and that fact is stated explicitly wherever its
+numbers are reported (not left for a reader to infer) — the justification
+is: this is the fairest, most literal reproduction of the specific
+comparison the paper's own authors validated, not a general-purpose
+competitor. Hard-fails immediately (raises `TypeError`) if ever called on
+a non-`GaussianMixtureEnv` instance, rather than silently misapplying a
+Gaussian-only method to Experiment 2/3's other families.
+
+**Threshold formula verification (2026-09-15), against a fresh read of the
+paper (arXiv:2601.07535).** `src/kabc/thresholds.py`'s
+`variance_aware_threshold` and `subgaussian_threshold` were checked
+directly against the paper's Eq. 6 and the Discussion section's substitute
+formula and match exactly, term for term (the `32/3` coefficient in Eq.
+6's second term; the `(sqrt(log_term)+2)` form of the sub-Gaussian bound).
+Confirmed the paper uses two conceptually DISTINCT kernel constants that
+happen to coincide numerically for the RBF kernel used throughout this
+repo: g̃ (the kernel's *range*, sup − inf, used in Eq. 6) vs. ḡ (the
+kernel's *supremum*, used in the sub-Gaussian formula) — both equal `1.0`
+for RBF (inf → 0 as distance → ∞), but the code correctly keeps them as
+separate named parameters (`g_tilde` vs. `g_bar`) rather than silently
+conflating them, matching the paper's own distinction.
+
+**Paper's own theoretical claims relevant to interpreting results (Section
+4, "Benefit of variance-aware bounds").** Since the per-arm RKHS variance
+𝒱ᵢ* never exceeds the kernel's global bound ḡ, the variance-aware bound is
+provably never worse than the sub-Gaussian one, and can substantially
+improve the budget whenever 𝒱ᵢ* ≪ ḡ — this is the paper's own
+justification for why `kabc-sg` (the sub-Gaussian ablation) should be
+expected to underperform `kabc` specifically on instances where per-arm
+variance is informative and small relative to ḡ. Experiment 2's
+`moment_matched_mixture` family (cluster A and B share mean AND variance,
+differ only in higher-order shape — see Experiment 2 section below) is
+exactly this regime: `kabc-sg`'s $83.2\%$ ARI-violation rate on that
+family (79/95 `stopped=True` runs with ARI≠1, `results/exp2/results.parquet`,
+50-rep run) is the paper's own analytically-anticipated worst case for the
+sub-Gaussian threshold, not an unexplained empirical artifact — see
+`docs/results_exp1_exp2_exp3.tex`'s Experiment 2 results section for the
+full derivation.
+
+**Paper's Gaussian/linear-kernel special case (Section 4) and Experiment
+1's Δ-sweep.** Section 4 gives an explicit analytic condition: for
+Gaussian arms under a linear kernel, KABC's budget bound matches the
+known-optimal Gaussian linear-kernel rate of `acb`'s own paper (Thuot et
+al. 2024) whenever ‖μᵢ−μⱼ‖ ≤ σⱼ²/√ḡ and the ambient dimension is moderate.
+For Experiment 1's instances (σ=1 throughout, RBF kernel ḡ=1), this
+condition reduces to Δ ≤ 1 — exactly the smallest, hardest point on
+Experiment 1's own Δ-sweep grid ({1, 1.5, 2, 3, 4, 6}), sitting at the
+boundary of the regime the theorem addresses rather than comfortably
+inside or outside it. This is worth keeping in mind when interpreting
+Experiment 1's Δ=1 results specifically (see that experiment's section
+below and `docs/results_exp1_exp2_exp3.tex`) — the theorem concerns the
+two algorithms' theoretical bounds, not either one's realized empirical τ,
+so treat any observed budget-competitiveness there as consistent with,
+not a literal restatement of, this special case.
+
+**Related active-clustering methods NOT included as baselines (recorded
+2026-09-15 for the paper's related-work framing; full paragraph-length
+draft lives in `docs/results_exp1_exp2_exp3.tex`'s Baselines section).**
+Beyond `acb`/`tas-fw` (both implemented) and `unif-kkm` (folklore, no
+paper), five other papers address closely related active/bandit
+clustering problems but were deliberately excluded, each for a specific,
+non-dismissive reason:
+- **BOC** (Yang, Zhong, Tan, "Optimal Clustering with Bandit Feedback,"
+  JMLR 2024, arXiv:2202.04294): same fixed-confidence clustering problem,
+  asymptotically optimal, but Track-and-Stop-style — solves a constrained
+  optimization problem at EVERY round, making per-decision cost
+  prohibitive at this benchmark's scale (same cost issue `tas-fw` has,
+  which is why `tas-fw` is restricted to Experiment 3's small N=8
+  instance).
+- **BanditClustering** (Graf, Thuot, Verzelen, "Clustering Items through
+  Bandit Feedback: Finding the Right Feature out of Many," ICML 2025,
+  arXiv:2503.11209): a genuinely different observation model (selects an
+  item AND a specific feature per round, not a full feature vector) — not
+  directly comparable without reformulating the environment.
+- **Clustered-BAI** (Yash, Karamchandani, Ghosh, "Near Optimal Best Arm
+  Identification for Clustered Bandits," ICML 2025, arXiv:2505.10147):
+  different objective entirely — identifying each of N agents' best arm
+  (clustering is a means to that end via information-sharing), not
+  partition recovery as the end goal.
+- **ATBOC** (Chandran, Reddy, Bhashyam, "Online Clustering of Data
+  Sequences with Bandit Information," IEEE ISIT 2025, arXiv:2501.11421):
+  closest in spirit (same fixed-confidence M-arms-into-K-groups problem),
+  not implemented in the current benchmark for lack of time, not
+  incompatibility — a natural future addition as an additional parametric
+  competitor alongside `acb` (different algorithmic structure: average
+  tracking, vs. ACB's mean-based approach and BOC's Track-and-Stop).
+- **EBC** (Chandran, Reddy, Bhashyam, "Efficient Clustering in Stochastic
+  Bandits," arXiv:2601.09162, 2026 preprint): addresses the SAME
+  per-round optimization bottleneck excluding BOC/limiting `tas-fw`, via a
+  single gradient-like step per round instead of solving the full
+  optimization problem, while retaining asymptotic optimality — emerged
+  concurrently with this work; the natural next inclusion once available,
+  not an implied criticism of BOC.
 
 ### 0.2 Calibrated constants protocol
 
@@ -365,6 +491,77 @@ precision the doubling schedule cannot honor. All three experiments'
 `scripts/run_experiment1.py`'s module docstring for the identical
 reasoning applied there.
 
+**REVISION 6 (2026-09-15): `acb-gaussian` added as a ninth, independent
+algorithm row.** Beyond `acb` (ACB*, Algorithm 2, adaptive, $\Delta_*$/
+$\theta_*$ unknown), the ACB paper's own Appendix A describes a SEPARATE
+variant, used for the paper's own Figure 1 numerical experiment (the one
+reporting $\le 1\%$ error at $\delta=0.1$): Algorithm 1 (non-adaptive,
+$\Delta$/$\theta$ assumed known), with every concentration-inequality-
+derived constant (Eq. 9-13's `c1`-`c5`) replaced by an EXACT $\delta$-level
+quantile ($n_{max}$ via a $\chi^2$ quantile; $I$/$J$ via a normal quantile
+$\beta$ and a Monte-Carlo product-quantile $\alpha$) -- see
+`src/kabc/algorithms/acb_gaussian.py`'s module docstring for the exact
+formulas (quoted directly from a full read of the rendered PDF, same
+verification standard as `tas_fw.py`'s own citations) and §0.1's algorithm
+table entry. Implemented as `acb-gaussian`, Experiment 1 ONLY (hard-fails
+on any non-`GaussianMixtureEnv` instance), reading $\Delta$/$\theta$/
+$\sigma$ directly off the environment rather than estimating them --
+legitimate here specifically because `GaussianMixtureEnv` is *constructed
+from* these exact values, so nothing is being estimated from data that a
+fair comparison would otherwise require estimating (see §0.1's algorithm
+table note and `docs/results_exp1_exp2_exp3.tex`'s dedicated
+"ACB-Gaussian" baselines subsection for the full non-oracle-cheat framing,
+stated explicitly rather than left for a reader to infer).
+
+**No `-0.5x` self-comparison row for `acb-gaussian`, deliberately, not an
+oversight.** Every other base algorithm's `-0.5x` row (`budget_cap =
+min(0.5*tau_own, budget_cap)`) measures how much MARGIN that algorithm's
+own stopping rule carries beyond what a correct answer needed -- margin
+that exists because kabc/kabc-sg/acb's thresholds are conservative
+concentration-inequality bounds with real, calibratable slack (see §0.2's
+`c_cal` protocol). `acb-gaussian` has no such slack: every constant is an
+exact quantile, not a bound with room to tighten (see its own CALIBRATION
+note in `acb_gaussian.py` and `configs/calibration.yaml`'s dedicated
+`acb-gaussian: null` entry, generated by `scripts/calibrate_constants.py`
+itself as a permanent, by-design skip -- not a "not yet calibrated"
+placeholder like `tas-fw`'s). A `-0.5x` row here would not test "how
+conservative is this threshold" the way it does for the other three; it
+would only show that halving an already-tight budget breaks the algorithm,
+a different and far less informative question.
+
+**Merge mechanism (avoiding a repeat of the earlier $N=90$ indexing
+issue).** `acb-gaussian` was added to an already-complete 50-rep,
+8-algorithm Experiment 1 dataset via a scratch-run-and-merge, run OUTSIDE
+`rep_start`'s resume/append mechanism (which assumes the algorithm list is
+unchanged between invocations and cannot backfill a newly-added row's
+reps 0-49). Two indexing pitfalls were identified and avoided/fixed, both
+the same underlying class of bug as the earlier $N=90$ merge:
+1. **Grid-point indexing:** the scratch run reused the SAME `instances`/
+   `sweeps` structure as the real config (same 14 grid points, same
+   enumeration order), so `grid_point_index` -- and therefore the
+   Monte-Carlo `s_star`/`budget_cap` seed (`CAP_SEED_OFFSET + exp_id*
+   100_000 + grid_point_index`) -- matched exactly, verified directly by
+   recomputing all 14 grid points' `budget_cap` fresh and comparing
+   against every base algorithm's own stored value before merging.
+2. **Algorithm-index seeding (new, not present in the $N=90$ case):**
+   `acb-gaussian`'s per-rep RNG seed (`algo_seed = rep_seed*100 +
+   algo_idx`) had to use `algo_idx=8` -- its position in the canonical
+   bases-first-reordered 9-algorithm list (see
+   `scripts/run_experiment1.py`'s `_reorder_bases_first`) -- NOT `0` (its
+   position if run alone in an isolated scratch list), which would have
+   collided with `kabc`'s own per-rep seed at every single rep.
+3. **A genuinely separate, pre-existing inconsistency this check
+   incidentally surfaced:** $N=120$'s `kabc`/`kabc-sg`/`acb` base rows had
+   two different `budget_cap` values across the pilot (reps 0-9,
+   `grid_point_index=12`, computed BEFORE $N=90$ was permanently added to
+   the sweep) vs. the extension (reps 10-49, `grid_point_index=13`, AFTER)
+   -- a ~1.2% drift, unrelated to `acb-gaussian` but caught by the same
+   verification pass. Confirmed zero practical effect (every algorithm's
+   realized $\tau$ at $N=120$ is far below both candidate cap values, so
+   neither was ever binding) and patched for provenance consistency:
+   reps 0-9's stored `budget_cap` for those three algorithms at $N=120$
+   was overwritten to the correct, current value (matching reps 10-49).
+
 **Claim tested:** in the mean-separated Gaussian setting (home turf of ACB/BOC),
 KABC's budget is within a modest factor of ACB; budget scales as s*^{-2} log(N/δ)
 (Theorem 3.1); variance-aware threshold beats sub-Gaussian threshold. Also
@@ -400,7 +597,7 @@ and moved to its own dedicated script too, at which point `run_experiment.py`
 had zero remaining users and was deleted outright -- see Experiment 2's
 own REDESIGN NOTE and `scripts/common.py`'s module docstring.)
 
-**Algorithms: 8 rows per (grid point, rep).** Three independent BASE
+**Algorithms: 9 rows per (grid point, rep).** Three independent BASE
 algorithms — `kabc`, `kabc-sg`, `acb` — each run once at the grid point's
 full `budget_cap`. Each base is then, separately, re-run at
 `budget_cap = min(0.5 * its_own_realized_tau, budget_cap)`, with a FRESH
@@ -417,7 +614,9 @@ own independent n-grid (the original design); this ties it to a real
 realized adaptive budget instead. No `tas-fw` here: its finite-alphabet
 assumption doesn't hold for these continuous Gaussian instances; it runs
 only in Experiment 3, where the assumption holds natively (MovieLens
-ratings on {1..5}).
+ratings on {1..5}). `acb-gaussian` (REVISION 6 above) is a ninth,
+independent base row with no `-0.5x` counterpart and no calibration — see
+that note for the full reasoning.
 
 **Budget_cap: one value per grid point, shared across all 8 algorithm rows
 and every rep** — `s_star_formula`, `constant=200`, exactly the paper's
@@ -845,11 +1044,18 @@ speculation):**
   smooth one. 0.5x is applied everywhere `0.9x` previously was (Experiments
   1, 2, and this one) to make what is actually being tested explicit: a
   meaningfully smaller, still-real budget cut, not false precision the
-  doubling schedule cannot honor. This experiment's own results have not
-  yet been re-run under the new multiplier at the time of this note (see
-  Run Provenance in `docs/results_exp1_exp2_exp3.tex`) --- REVISION 4's
-  `0.9x` results above describe what actually ran; a fresh run at `0.5x` is
-  planned as a follow-up.
+  doubling schedule cannot honor. **UPDATE (2026-09-15): this experiment's
+  results were re-run under the new multiplier and are no longer pending.**
+  `results/exp3_{1,2,3}/results.parquet` (300 rows each, 50 reps/algorithm/
+  version) were regenerated by `scripts/run_experiment3.py` after the
+  rename (file mtimes 2026-09-15, after this commit's 2026-09-14 rename of
+  `KABC_TAU_MULTIPLE_VARIANTS` to `{"kabc-0.5x": 0.5}`) --- confirmed
+  directly by re-deriving each `kabc-0.5x` row's `budget_cap` from its
+  matching same-(rep,version) `kabc` row's realized tau: every one of the
+  150 `kabc-0.5x` rows across all three versions has
+  `budget_cap / tau_kabc == 0.5` exactly (std 0.0), not `0.9`. The results
+  reported in `docs/results_exp1_exp2_exp3.tex` for Experiment 3 are
+  genuine `0.5x` re-runs, not relabeled `0.9x` data.
 
 **Why N cannot realistically grow past 8-10: tas-fw's cost.** tas-fw's
 Track-and-Stop design re-scans its ENTIRE hypothesis space (|C|, the number
@@ -1050,12 +1256,29 @@ instance varies per rep here, so the sampled pair is essential context for
 any post-hoc analysis (e.g. checking whether hard cases cluster around
 specific movies).
 
-**Figures:** four bar plots (ARI, τ, wall-clock/rep, convergence/stopped
-rate), each with 3 sets (versions) of 6 bars (algorithms) --- 18 bars per
-plot, mean ± std (`notebooks/03_movielens_random_pairs.ipynb`). The
-convergence-rate plot (new, REVISION 4) is the fraction of reps with
-`stopped=True` per algorithm per version --- read alongside the ARI plot per
-the "caution on interpreting" note above, not in isolation.
+**Figures -- 5 total: 1 headline (3 panels) + 4 grouped bar plots (18 bars
+each):**
+1. **Headline (added 2026-09-15, 1 figure, 3 panels in a single row, one
+   per version):** the ACTUAL movie pair sampled at a single fixed rep
+   (`rep=0`), plotted as real rating histograms
+   (`data/ml-1m-207/ratings.parquet`, not recomputed from any algorithm
+   output -- same category as Experiment~2's headline figure, which plots
+   real 2D sample scatters directly from `RingBlobEnv`). At `rep=0`, all
+   three versions happen to share the same shared-candidate-order first
+   eligible movie A (``Rain Man'', 1988), so the figure directly shows how
+   each version's own $B$-selection rule picks a different movie $B$
+   against the identical $A$ -- `exp3_1`'s cherry-picked max-MMD$^2$ choice
+   is visibly the most separated of the three, `exp3_3`'s uniformly-chosen
+   $B$ under the same tight tolerance is visibly the most overlapping, a
+   real-data illustration of why `exp3_3` is the hardest version.
+2. Four bar plots (ARI, τ, wall-clock/rep, convergence/stopped rate), each
+   with 3 sets (versions) of 6 bars (algorithms) --- 18 bars per plot, mean
+   ± std. The convergence-rate plot (REVISION 4) is the fraction of reps
+   with `stopped=True` per algorithm per version --- read alongside the
+   ARI plot per the "caution on interpreting" note above, not in
+   isolation.
+
+All five figures live in `notebooks/03_movielens_random_pairs.ipynb`.
 
 **Expected outcome (first pass at 20 reps under the new config -- treat as
 directional, not confirmed, until this run actually completes):** `exp3_1`

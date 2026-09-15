@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 # controls legend and box-plot ordering everywhere.
 ALGO_ORDER = [
     "kabc", "kabc-0.5x", "kabc-sg", "kabc-sg-0.5x",
-    "acb", "acb-0.5x", "tas-fw",
+    "acb", "acb-0.5x", "acb-gaussian", "tas-fw",
     "unif-kkm-1x", "unif-kkm-0.5x",
 ]
 
@@ -64,6 +64,14 @@ ALGO_COLORS = {
     # placeholder, same principle as unif-kkm-full/unif-kkm-2x above.
     "acb": "#0072B2",  # blue -- main competitor (mean-based)
     "acb-0.5x": "#89BEDC",
+    # acb-gaussian (Experiment 1 ONLY, docs/experiments.md's REVISION 6):
+    # the ACB paper's own Gaussian-specialized, non-adaptive variant
+    # (Appendix A) -- a DIFFERENT algorithm from acb/acb-0.5x above (no
+    # `-0.5x` counterpart, no calibration), not one more budget tier of it,
+    # so it deliberately does NOT share acb's blue family -- reddish
+    # purple (Okabe-Ito), visually and semantically distinct from both the
+    # kabc warm family and the acb/unif-kkm cool families.
+    "acb-gaussian": "#CC79A7",
     "tas-fw": "#009E73",  # green -- finite-alphabet competitor
     # unif-kkm variants (tied to a base algorithm's own realized tau, not an
     # independent sweep -- see docs/experiments.md's Experiment 1/2/3
@@ -84,6 +92,7 @@ ALGO_LABELS = {
     "kabc-sg-0.5x": "KABC-SG (0.5x τ)",
     "acb": "ACB",
     "acb-0.5x": "ACB (0.5x τ)",
+    "acb-gaussian": "ACB-Gaussian",
     "tas-fw": "TaS-FW",
     "unif-kkm-1x": "Unif-KKM (1x)",
     "unif-kkm-0.5x": "Unif-KKM (0.5x)",
@@ -102,6 +111,7 @@ ALGO_LINESTYLES = {
     "kabc-sg-0.5x": "-.",
     "acb": "-",
     "acb-0.5x": "-.",
+    "acb-gaussian": "-",  # independent base, like kabc/kabc-sg/acb -- not a 0.5x-derived variant
     "tas-fw": "-",
     "unif-kkm-1x": ":",
     "unif-kkm-0.5x": ":",
@@ -114,6 +124,7 @@ ALGO_MARKERS = {
     "kabc-sg-0.5x": "p",
     "acb": "D",
     "acb-0.5x": "<",
+    "acb-gaussian": "^",
     "tas-fw": "v",
     "unif-kkm-1x": "*",
     "unif-kkm-0.5x": "d",

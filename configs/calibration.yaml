@@ -55,3 +55,18 @@ c_cal:
     # specified with no free leading constant to calibrate -- nothing in
     # tas_fw.py consumes this value today. Kept for a possible future
     # modification (e.g. scaling beta(t,delta) down empirically).
+  acb-gaussian:
+    value: null
+    calibration_set_error: null
+    held_out_error: null
+    # NOT a "not yet calibrated" placeholder like tas-fw above -- this is a
+    # deliberate, permanent, by-design absence: kabc.algorithms.acb_gaussian
+    # (arXiv:2406.11485 Appendix A's Gaussian-specialized, non-adaptive ACB
+    # variant) has NO leading constant anywhere in its formulas to
+    # calibrate. Every quantity (n_max via a chi-squared quantile; I/J via a
+    # normal quantile beta and a Monte-Carlo product-quantile alpha) is an
+    # EXACT delta-level quantile of the statistic's true finite-sample
+    # distribution, not a concentration-inequality bound with slack to
+    # tighten -- see acb_gaussian.py's own CALIBRATION note. `make calibrate`
+    # writes this exact block itself (scripts/calibrate_constants.py) and
+    # always will -- this is not a hand-edit exception to the rule above.

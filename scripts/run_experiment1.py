@@ -33,13 +33,35 @@ algorithm's own pull-noise rng substream differs by rep.
 SANDBOX: importing scripts.common forces joblib's 'multiprocessing' backend
 process-wide -- see that module's docstring for the full detail.
 
-ALGORITHM ROSTER (8 rows): kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x,
-kabc-sg, kabc-sg-0.5x, acb, acb-0.5x. Three independent BASE algorithms
-(kabc, kabc-sg, acb) are each run once at the grid point's full
+ALGORITHM ROSTER (9 rows): kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x,
+kabc-sg, kabc-sg-0.5x, acb, acb-0.5x, acb-gaussian. Three independent BASE
+algorithms (kabc, kabc-sg, acb) are each run once at the grid point's full
 `budget_cap`; each is then, separately, re-run at `budget_cap =
 min(0.5 * its_own_tau, budget_cap)`, with a fresh independent RNG
 substream (not the base run's exact same pulls truncated early) -- testing
 how conservative THAT algorithm's own stopping rule is, per rep.
+
+ACB-GAUSSIAN (added 2026-09-15, `kabc.algorithms.acb_gaussian`): the
+Gaussian-specialized, non-adaptive ACB variant from the ACB paper's own
+Appendix A (arXiv:2406.11485) -- the variant its own authors used for their
+Figure 1 experiment, distinct from `acb` (the main-text adaptive ACB* this
+script also runs). Experiment 1 ONLY (its formulas require a
+GaussianMixtureEnv; it hard-fails on anything else -- see
+acb_gaussian.py's `_require_gaussian_env`), wired here as a NINTH,
+independent base row with NO `-0.5x` self-comparison counterpart -- unlike
+kabc/kabc-sg/acb, it has no calibrated-constant slack for a `-0.5x` row to
+meaningfully measure (see acb_gaussian.py's own "NO -0.5x SELF-COMPARISON
+ROW" note for why this isn't an oversight) -- and NO calibrated constant (see
+`kabc.algorithms.acb_gaussian`'s CALIBRATION note and
+`configs/calibration.yaml`'s own note for this algorithm) -- called
+directly via `acb_gaussian.fit`, not through a `scripts.common`
+calibration-wrapping layer the way `kabc`/`kabc-sg`/`acb` are, since there
+is no `c_cal` to inject. It reads Delta/theta/sigma directly off `env`
+(known exactly at Experiment 1's instance-construction time) rather than
+estimating them -- see acb_gaussian.py's own docstring for why this is a
+legitimate, explicitly-flagged non-oracle-cheat comparison specific to this
+experiment, and docs/results_exp1_exp2_exp3.tex's Baselines section for the
+paper-facing statement of the same.
 
 MULTIPLIER CHANGED from an earlier 0.9x to 0.5x (2026-09-14), after directly
 inspecting per-rep kabc/kabc-0.9x rows: KABC's doubling-trick schedule
@@ -111,6 +133,7 @@ from joblib import Parallel, delayed
 # blocks in joblib's default 'loky' backend) -- see that module's docstring
 # for the full detail.
 from kabc import metrics
+from kabc.algorithms import acb_gaussian
 from kabc.algorithms.baselines import fit as unif_kkm_fit
 from kabc.environments import GaussianMixtureEnv
 from scripts.common import (
@@ -131,6 +154,7 @@ BASE_FIT_FUNCTIONS = {
     "kabc": _kabc_fit,
     "kabc-sg": _kabc_sg_fit,
     "acb": _acb_fit,
+    "acb-gaussian": acb_gaussian.fit,  # no calibration wrapper -- see module docstring's ACB-GAUSSIAN note
 }
 # derived_id -> (base_id whose tau this scales, multiplier, fit function to call)
 DERIVED_VARIANTS = {

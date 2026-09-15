@@ -14,19 +14,17 @@
 
 exp_id: 3
 delta: 0.05
-reps: 20                       # first pass -- see docs/experiments.md's REVISION 4 note
-# rep_start: 0                 # RESUME/APPEND: uncomment and set > 0 to append more
-                                # reps to EXISTING results/exp3_*/results.parquet
-                                # instead of recomputing from scratch -- e.g. a fast
-                                # 10-rep pilot first (reps: 10, rep_start unset or
-                                # 0), then later a follow-up (rep_start: 10, reps:
-                                # 50) appends 40 more reps to the same files.
-                                # Default 0 (omit this line) preserves normal
-                                # from-scratch behavior. Assumes the algorithm/
-                                # version list is unchanged between the two runs --
-                                # see scripts/run_experiment3.py's main() for the
-                                # exact mechanism (already implemented there; this
-                                # config just never documented it before).
+reps: 50                       # COMPLETE (2026-09-15): full 50-rep run finished;
+                                # results/exp3_*/results.parquet have clean reps
+                                # 0-49 for all 6 algorithms x 3 versions, verified.
+rep_start: 50                  # READY FOR A FUTURE EXTENSION: set to the CURRENT rep
+                                # count (50) so this config is a safe no-op as-is
+                                # (range(50, reps) is empty until `reps` above is
+                                # raised). RESUME/APPEND: raise `reps` above (e.g. to
+                                # 100) to append more reps to results/exp3_*/results.parquet
+                                # for all 6 algorithms x 3 versions uniformly -- see
+                                # scripts/run_experiment3.py's main() for the exact
+                                # mechanism.
 seed_multiplier: 1000
 seed_formula: "seed = seed_multiplier * exp_id + rep"
 
