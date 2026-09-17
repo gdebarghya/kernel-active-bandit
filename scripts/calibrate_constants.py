@@ -381,10 +381,17 @@ def _render_yaml(results: dict) -> str:
         "    # simplification, not a claim that all six need identical scaling.\n"
     )
     tas_fw_comment = (
-        "    # Placeholder only: tas_fw.py's beta(t,delta) (Eq. 66) is fully\n"
-        "    # specified with no free leading constant to calibrate -- nothing in\n"
-        "    # tas_fw.py consumes this value today. Kept for a possible future\n"
-        "    # modification (e.g. scaling beta(t,delta) down empirically).\n"
+        "    # This value stays null DELIBERATELY -- tas-fw's own calibrated const\n"
+        "    # (added 2026-09-17, see kabc.algorithms.tas_fw._fit's `const` kwarg) now\n"
+        "    # DOES exist and IS consumed by tas_fw.py, but is calibrated and frozen\n"
+        "    # via a completely SEPARATE script/file/protocol -- scripts/calibrate_tas_fw.py\n"
+        "    # -> configs/calibration_tas_fw.yaml, NOT this script/file -- because tas-fw\n"
+        "    # needed its own synthetic calibration instance (finite-alphabet only, can't\n"
+        "    # use GaussianMixtureEnv) and its own cost-driven protocol (a trajectory-\n"
+        "    # recording trick specific to tas-fw's const-independent sampling rule; see\n"
+        "    # docs/experiments.md's Experiment 3 tas-fw calibration follow-up section for\n"
+        "    # the full writeup). This script/file were deliberately left untouched by that\n"
+        "    # work to keep the two calibration protocols fully independent.\n"
     )
     acb_gaussian_comment = (
         "    # NOT a \"not yet calibrated\" placeholder like tas-fw above -- this is a\n"

@@ -1,0 +1,64 @@
+# Ad hoc follow-up probe (NOT part of the frozen Experiment 3 design in
+# docs/experiments.md): does tas-fw's point estimate (sigma_hat) already
+# find the correct clustering at a much smaller budget_cap than exp3's
+# production value (15000), given that production tas-fw rarely clears its
+# own beta(t,delta) certification threshold anyway (see the "tas-fw
+# stopping rule" discussion this config follows up on)? Two FIXED budget
+# tiers, 0.1x and 0.2x of exp3's production budget_cap=15000 (1500/3000) --
+# NOT a multiple of any run's own realized tau, unlike kabc-0.5x/unif-kkm-1x
+# elsewhere in this repo.
+#
+# Reuses exp3's own real movie-pool loading and per-(rep,version) pair
+# selection VERBATIM (same exp_id/seed_multiplier -> same rep_seed formula
+# -> same candidate_order/b_rng draws), by importing those functions
+# directly from scripts/run_experiment3.py rather than reimplementing them
+# -- so for a given rep, this run's movie pair is IDENTICAL to production
+# exp3's pair for that same rep/version, making the two directly comparable
+# as an extra pair of algorithm rows over the same underlying instances.
+# Algorithm-level RNG substreams are still independent from production's
+# own tas-fw row (different algo_idx in the seed formula -- see
+# scripts/run_experiment3_tasfw_lowbudget.py).
+#
+# Writes to results/exp3_tasfw_lowbudget/results.parquet -- a SEPARATE file,
+# never results/exp3_1|2|3/results.parquet (production, untouched).
+# Consumed by scripts/run_experiment3_tasfw_lowbudget.py.
+
+exp_id: 3               # deliberately SAME as configs/exp3.yaml -- see module
+                         # docstring above: this is what makes the sampled
+                         # movie pairs match production exp3 rep-for-rep.
+delta: 0.05
+reps: 50
+rep_start: 0
+seed_multiplier: 1000
+
+data_dir: data/ml-1m-207
+arms_per_prototype: 4    # N = 2 * arms_per_prototype = 8, K = 2 -- identical to exp3
+
+n_jobs: 10                # same as configs/exp3.yaml -- parallelize across reps
+
+# Two fixed-budget tas-fw variants (see module docstring for why "0.1x"/
+# "0.2x" refer to exp3's production budget_cap=15000, not to any run's own
+# realized tau).
+variants:
+  - id: tas-fw-0.1x
+    budget_cap: 1500
+  - id: tas-fw-0.2x
+    budget_cap: 3000
+
+# Identical to configs/exp3.yaml's `versions` block (verbatim) -- must stay
+# in sync with it so pair-selection matches production exactly; not
+# imported programmatically so this file stays human-readable/standalone.
+versions:
+  - name: exp3_1
+    rule: max_mmd
+    comparison: le
+    mean_gap_tol: 0.25
+  - name: exp3_2
+    rule: uniform
+    comparison: range
+    mean_gap_min: 0.25
+    mean_gap_max: 1.0
+  - name: exp3_3
+    rule: uniform
+    comparison: le
+    mean_gap_tol: 0.25

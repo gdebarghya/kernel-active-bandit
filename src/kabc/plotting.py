@@ -31,8 +31,9 @@ import matplotlib.pyplot as plt
 # controls legend and box-plot ordering everywhere.
 ALGO_ORDER = [
     "kabc", "kabc-0.5x", "kabc-sg", "kabc-sg-0.5x",
-    "acb", "acb-0.5x", "acb-gaussian", "tas-fw",
+    "acb", "acb-0.5x", "acb-gaussian", "tas-fw", "tas-fw-0.1x", "tas-fw-0.2x", "tas-fw-calibrated",
     "unif-kkm-1x", "unif-kkm-0.5x",
+    "unif-kkm-highfixed", "unif-kkm-midfixed", "unif-kkm-lowfixed", "unif-kkm-naive",
 ]
 
 ALGO_COLORS = {
@@ -73,6 +74,22 @@ ALGO_COLORS = {
     # kabc warm family and the acb/unif-kkm cool families.
     "acb-gaussian": "#CC79A7",
     "tas-fw": "#009E73",  # green -- finite-alphabet competitor
+    # tas-fw-0.1x/-0.2x (ad hoc probe, scripts/run_experiment3_tasfw_lowbudget.py,
+    # results/exp3_tasfw_lowbudget/results.parquet -- separate from exp3's own
+    # production results/exp3_1|2|3): tas-fw re-run at a FIXED budget_cap of
+    # 0.1x/0.2x of exp3's production budget_cap=15000 (1500/3000), not a
+    # multiple of any run's own realized tau. Same green family as tas-fw,
+    # lighter as budget shrinks (0.2x > 0.1x), matching the unif-kkm/kabc-0.5x
+    # convention of "lighter = less budget, same hue = same base algorithm".
+    "tas-fw-0.2x": "#4DB38F",
+    "tas-fw-0.1x": "#A3D9C4",
+    # tas-fw-calibrated (scripts/calibrate_tas_fw.py + scripts/run_experiment3_tasfw_calibrated.py):
+    # tas-fw at exp3's REAL budget_cap=15000 with a properly calibrated (not
+    # just budget-capped) beta(t,delta) threshold -- a darker, more saturated
+    # shade than the base tas-fw color (inverting the "-0.1x/-0.2x lighter"
+    # convention above) since this is not a cruder variant, it's the
+    # intended replacement for the uncalibrated tas-fw row.
+    "tas-fw-calibrated": "#00694A",
     # unif-kkm variants (tied to a base algorithm's own realized tau, not an
     # independent sweep -- see docs/experiments.md's Experiment 1/2/3
     # sections): grey family, shaded darker to lighter as budget shrinks (1x
@@ -83,6 +100,19 @@ ALGO_COLORS = {
     # referenced them -- not kept as legacy placeholders.
     "unif-kkm-1x": "#CCCCCC",
     "unif-kkm-0.5x": "#E5E5E5",
+    # Experiment 4's tau_kabc-BLIND fixed-budget variants (docs/experiments.md,
+    # Experiment 4 "Algorithms" -- NOT a multiple of tau_kabc like 1x/0.5x
+    # above, each condition's own doubling-trick-derived constant instead):
+    # kept in the same grey family (still unif-kkm/k-means), shaded by
+    # budget tier (highfixed > midfixed > lowfixed), so the ordering reads
+    # the same way at a glance. unif-kkm-naive (n=50/arm, no reference to
+    # tau_kabc or any budget_cap at all) gets a distinct pale blue-grey --
+    # it is categorically different (oracle-free), not just another budget
+    # tier of the same family.
+    "unif-kkm-highfixed": "#B0B0B0",
+    "unif-kkm-midfixed": "#D5D5D5",
+    "unif-kkm-lowfixed": "#EDEDED",
+    "unif-kkm-naive": "#B8C4CC",
 }
 
 ALGO_LABELS = {
@@ -94,8 +124,15 @@ ALGO_LABELS = {
     "acb-0.5x": "ACB (0.5x τ)",
     "acb-gaussian": "ACB-Gaussian",
     "tas-fw": "TaS-FW",
+    "tas-fw-0.1x": "TaS-FW (0.1x cap)",
+    "tas-fw-0.2x": "TaS-FW (0.2x cap)",
+    "tas-fw-calibrated": "TaS-FW (calibrated)",
     "unif-kkm-1x": "Unif-KKM (1x)",
     "unif-kkm-0.5x": "Unif-KKM (0.5x)",
+    "unif-kkm-highfixed": "Unif-KKM (high fixed)",
+    "unif-kkm-midfixed": "Unif-KKM (mid fixed)",
+    "unif-kkm-lowfixed": "Unif-KKM (low fixed)",
+    "unif-kkm-naive": "Unif-KKM (naive, n=50/arm)",
 }
 
 # Linestyle carries a second channel of identity so greyscale figures still
@@ -113,8 +150,15 @@ ALGO_LINESTYLES = {
     "acb-0.5x": "-.",
     "acb-gaussian": "-",  # independent base, like kabc/kabc-sg/acb -- not a 0.5x-derived variant
     "tas-fw": "-",
+    "tas-fw-0.1x": "-.",
+    "tas-fw-0.2x": "-.",
+    "tas-fw-calibrated": "-",
     "unif-kkm-1x": ":",
     "unif-kkm-0.5x": ":",
+    "unif-kkm-highfixed": ":",
+    "unif-kkm-midfixed": ":",
+    "unif-kkm-lowfixed": ":",
+    "unif-kkm-naive": ":",
 }
 
 ALGO_MARKERS = {
@@ -126,8 +170,15 @@ ALGO_MARKERS = {
     "acb-0.5x": "<",
     "acb-gaussian": "^",
     "tas-fw": "v",
+    "tas-fw-0.1x": "3",
+    "tas-fw-0.2x": ">",
+    "tas-fw-calibrated": "P",
     "unif-kkm-1x": "*",
     "unif-kkm-0.5x": "d",
+    "unif-kkm-highfixed": "1",
+    "unif-kkm-midfixed": "2",
+    "unif-kkm-lowfixed": "x",
+    "unif-kkm-naive": "+",
 }
 
 

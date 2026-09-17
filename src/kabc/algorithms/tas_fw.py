@@ -63,11 +63,54 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
     """TaS-FW (Algorithm 1). `env.pull` must return values from a small,
     common finite alphabet (e.g. MovieLens ratings on {1,...,5}) -- there is
     no discretization step here; see the module docstring for why.
+
+    Thin wrapper over `_fit(..., const=1.0)` -- CLAUDE.md's fixed
+    `fit(env, delta, budget_cap, rng)` interface is preserved exactly; `_fit`
+    below is the intended entry point for the calibration script (same
+    "public fit / private _fit(..., const=...)" split as kabc.py/acb.py).
+    """
+    return _fit(env, delta, budget_cap, rng, const=1.0)
+
+
+def _fit(
+    env,
+    delta: float,
+    budget_cap: int,
+    rng: np.random.Generator,
+    const: float = 1.0,
+    record_full_trajectory: bool = False,
+) -> Result:
+    """Private entry point, reached by `scripts/calibrate_tas_fw.py` (see
+    docs/experiments.md's tas-fw calibration section), not part of the
+    public algorithm interface.
+
+    `const` multiplies the WHOLE beta(t,delta) bound (Eq. 66) -- same
+    convention as thresholds.py's `const`/kabc's calibrated `c_cal`.
+
+    `record_full_trajectory=True` (calibration-only): ignores the
+    const-scaled stop condition and keeps sampling via the SAME C-tracking
+    rule all the way to `budget_cap`, logging (t, Z_t, beta_raw, partition)
+    at every step. This is valid specifically because neither the sampling
+    rule (`_frank_wolfe_direction`, `_is_forced_exploration_step`) nor Z_t
+    itself ever reads `beta`/`const` anywhere -- the recorded sample path is
+    IDENTICAL regardless of const. So ANY candidate const's counterfactual
+    stopping time/correctness can be recovered OFFLINE from one recorded
+    trajectory: tau(const) = min{t : Z_t(t) >= const * beta_raw(t)}, without
+    re-running the algorithm -- see docs/experiments.md for the full
+    calibration-protocol writeup this enables. `beta_raw` is always the
+    UNSCALED (const=1.0) value regardless of the `const` this call was
+    actually given, precisely so a stored trajectory can be rescaled to any
+    other const later (alphabet size grows with t as more rating values are
+    observed, so beta_raw(t) is NOT a fixed closed-form function of t alone
+    -- it must be recorded from the actual run, not recomputed independently
+    afterward).
     """
     if not 0.0 < delta < 1.0:
         raise ValueError(f"delta must be in (0, 1), got {delta!r}")
     if budget_cap < 1:
         raise ValueError(f"budget_cap must be >= 1, got {budget_cap!r}")
+    if const <= 0:
+        raise ValueError(f"const must be > 0, got {const!r}")
 
     N = env.n_arms
     K = env.K
@@ -89,10 +132,21 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
 
     history: list[dict] = []
     sigma_hat, Z_t = _current_best_and_stat(outcomes, hypotheses, alphabet, N)
-    beta = _threshold(t, delta, K, len(alphabet), N)
+    beta_raw = _threshold(t, delta, K, len(alphabet), N)
+    beta = const * beta_raw
+    if record_full_trajectory:
+        history.append({
+            "t": t, "Z_t": Z_t, "beta_raw": beta_raw,
+            "partition": _hypothesis_to_partition(sigma_hat, N),
+        })
 
-    while Z_t < beta:
+    while record_full_trajectory or Z_t < beta:
         if t >= budget_cap:
+            if record_full_trajectory:
+                return Result(
+                    partition=_hypothesis_to_partition(sigma_hat, N), tau=t,
+                    stopped=bool(Z_t >= beta), history=history,
+                )
             return _graceful_stop(N, t, history, sigma_hat)
 
         t += 1
@@ -114,8 +168,15 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
 
         alphabet = _infer_alphabet(outcomes)
         sigma_hat, Z_t = _current_best_and_stat(outcomes, hypotheses, alphabet, N)
-        beta = _threshold(t, delta, K, len(alphabet), N)
-        history.append({"t": t, "Z_t": Z_t, "beta": beta, "sigma_hat_clusters": len(sigma_hat)})
+        beta_raw = _threshold(t, delta, K, len(alphabet), N)
+        beta = const * beta_raw
+        if record_full_trajectory:
+            history.append({
+                "t": t, "Z_t": Z_t, "beta_raw": beta_raw,
+                "partition": _hypothesis_to_partition(sigma_hat, N),
+            })
+        else:
+            history.append({"t": t, "Z_t": Z_t, "beta": beta, "sigma_hat_clusters": len(sigma_hat)})
 
     partition = _hypothesis_to_partition(sigma_hat, N)
     return Result(partition=partition, tau=t, stopped=True, history=history)

@@ -163,6 +163,17 @@ where `c_cal` is calibrated ONCE, globally, as follows:
 Same protocol applied independently to `acb` and `tas-fw` so no method is
 disadvantaged. Store calibrated values in `configs/calibration.yaml`.
 
+**Outcome for `tas-fw` specifically (2026-09-17)**: this literal protocol
+(GMM instance, live-rerun bisection) was never applicable to it --
+`tas-fw` is finite-alphabet only, can't run on `GaussianMixtureEnv` at
+all. It has its OWN, separately-run calibration instead (synthetic
+`DiscretePMFPairEnv` instances, a cost-driven trajectory-recording
+protocol, own output file `configs/calibration_tas_fw.yaml`, NOT
+`configs/calibration.yaml`'s `tas-fw` entry, which stays `null` by design)
+-- see the "Follow-up... tas-fw low-budget probe and calibration"
+subsection at the end of the Experiment 3 section below for the full
+writeup.
+
 **Deviation from steps 1-2 above, as actually implemented in
 `scripts/calibrate_constants.py` (compute-constraint, illustrative-supplement
 scope):** a real (non-smoke) calibration run against the literal protocol —
@@ -419,7 +430,10 @@ why it was trusted here instead of the raw calibration-set result.
 - All results saved as parquet in `results/expN/`; notebooks only load + plot,
   never recompute silently.
 - **Resume/append across separate runs (all three experiments,
-  2026-09-14):** each dedicated script reads an optional `rep_start` from
+  2026-09-14; Experiment 4's own dedicated script adopted the identical
+  mechanism when it was added, 2026-09-16 -- see that section's own
+  "Implementation" paragraph):** each dedicated script reads an optional
+  `rep_start` from
   its config (default 0). Because each rep's seed is a direct function of
   its own rep index (`seed = seed_multiplier * exp_id + rep`, further split
   per algorithm), reps `[rep_start, reps)` are always independent, disjoint
@@ -1297,6 +1311,402 @@ evidence this round specifically adds: how much of kabc's own budget is
 "extra margin" beyond what a correct answer needed, and whether that margin
 looks different across the three pairing regimes.
 
+### Follow-up (ad hoc, not part of the frozen design above): tas-fw low-budget probe and calibration
+
+Prompted by a direct observation on the completed 50-rep run: `tas-fw`
+almost never reports `stopped=True` (4-70% across the three versions --
+see the table above), yet its point estimate is usually already correct
+regardless. Investigated in two stages, both **kept fully separate from
+the production Experiment 3 code/results/config** (own scripts, own
+configs, own `results/` subdirectories -- `results/exp3_1|2|3/results.parquet`
+were never touched by either).
+
+**Stage 1 -- low-budget probe (`scripts/run_experiment3_tasfw_lowbudget.py`,
+`configs/exp3_tasfw_lowbudget.yaml`, `results/exp3_tasfw_lowbudget/results.parquet`).**
+Re-runs tas-fw at two FIXED, reduced budgets -- `tas-fw-0.1x`
+(`budget_cap=1500`) and `tas-fw-0.2x` (`budget_cap=3000`), i.e. 0.1x/0.2x of
+production's `budget_cap=15000`, NOT a multiple of any run's own realized
+tau -- across all 50 reps x 3 versions, using the SAME `exp_id`/
+`seed_multiplier` as `configs/exp3.yaml` so every rep draws the identical
+real movie pair as the corresponding production row (directly comparable,
+instance-for-instance). Real 50-rep results:
+
+| version | `tas-fw-0.1x` mean ARI | `tas-fw-0.2x` mean ARI |
+|---|---|---|
+| `exp3_1` | 1.000 &plusmn; 0.000 | 1.000 &plusmn; 0.000 |
+| `exp3_2` | 0.990 &plusmn; 0.071 | 1.000 &plusmn; 0.000 |
+| `exp3_3` | 0.526 &plusmn; 0.438 | 0.776 &plusmn; 0.365 |
+
+`frac_stopped=0` throughout (never certifies even at these tiny budgets,
+consistent with `beta(t,delta)`'s conservativeness). `exp3_1`/`exp3_2`'s
+point estimate is already essentially correct at just 10% of production's
+budget -- the remaining 90% is being spent entirely chasing certification,
+not accuracy. `exp3_3` is genuinely different: real, substantial ARI
+improvement from more budget (0.526 to 0.776 doubling 1500 to 3000) --
+confirms tas-fw works, and benefits from more samples, at budgets far
+smaller than production's 15000, specifically on the harder,
+non-cherry-picked pairing regime.
+
+**Stage 2 -- calibration (`scripts/calibrate_tas_fw.py`).** `tas_fw.py`'s
+`beta(t,delta)` (Eq. 66) had no calibratable constant at all before this
+(`configs/calibration.yaml`'s `tas-fw: null` was a structural absence, not
+a "not yet run" placeholder -- see that file's own comment). Added one,
+mirroring kabc's `const` convention (multiplies the WHOLE bound), via a
+private `_fit(..., const=1.0)` behind the unchanged public `fit()` --
+identical split to `kabc.py`/`acb.py`.
+
+Calibrating it needed its own protocol, not a fourth call into
+`scripts/calibrate_constants.py`'s live-rerun bisection, for two structural
+reasons. First, the calibration INSTANCE: tas-fw is finite-alphabet only
+(can't use Exp1's `GaussianMixtureEnv`), and Experiment 3 has no fixed
+reference instance (every rep resamples). Solved with a new, purely
+synthetic environment, `kabc.environments.DiscretePMFPairEnv` -- explicit
+probability vectors over the real rating support {1,...,5}, `N=8, K=2`
+matching Exp3's real deployment scale exactly (`beta`'s `K*alphabet_size +
+K_tilde + 2` term depends on it), NOT real MovieLens data at all (mirrors
+`GaussianMixtureEnv`'s role for kabc/kabc-sg/acb: separate from the data
+the constant will later be deployed against). Three regimes, not one fixed
+instance (tas-fw's own difficulty is highly gap-sensitive -- see Stage 1),
+with real, hand-verified KL-gaps spanning a genuine range: easy=1.484,
+moderate=0.804, hard=0.041 (mean-gaps 2.3/1.6/0.4, straddling Exp3's own
+0.25/0.5 close/far boundaries).
+
+Second, COST: tas-fw's real per-run cost at `budget_cap=15000` is
+~400-900s (5-10x kabc's own per-run cost) -- a literal live-rerun
+bisection (100 runs/iteration x 8 iterations + 100 held-out, per
+`scripts/calibrate_constants.py`'s own protocol) would have cost many
+hours. Avoided entirely by exploiting a structural fact specific to
+tas-fw: neither the C-tracking sampling rule (`_frank_wolfe_direction`)
+nor `Z_t` itself ever reads `beta`/`const` anywhere in `tas_fw.py` -- the
+sampled trajectory is IDENTICAL regardless of `const` (unlike kabc, whose
+threshold gates its own round-based sampling schedule). So each
+calibration rep needs exactly ONE real run --
+`_fit(..., const=1.0, record_full_trajectory=True)`, which ignores the
+const-scaled stop condition and samples to `budget_cap` regardless,
+logging `(t, Z_t, beta_raw, partition)` at every step -- after which ANY
+candidate `const`'s counterfactual stopping time/correctness is recoverable
+OFFLINE, for free: `tau(const) = min{t : Z_t(t) >= const * beta_raw(t)}`.
+Ground truth (`env.true_partition`) is used ONLY inside this one-time
+offline script (to check each candidate's recovered partition), exactly
+like kabc/kabc-sg/acb's own calibration -- never inside `tas_fw.py`'s
+`_fit`/`fit` themselves, and the PMFs are synthetic, so no real Exp3 data
+is ever seen during calibration either.
+
+Protocol: 30 reps/regime x 3 regimes = 90 real trajectory recordings for
+the search block, another 90 for held-out validation (`configs/
+calibration_tas_fw.yaml` records every setting), `delta=0.05`,
+`budget_cap=15000`. A candidate `const` passes only if empirical error
+(`not stopped OR wrong`, matching `scripts/calibrate_constants.py`'s own
+criterion) stays `<= delta/2` in EVERY regime independently, not pooled --
+a stricter bar than averaging across difficulty levels. Real cost: 90+90
+runs, wall-clock 5998.4s (search) + 5995.7s (held-out) = 12015.6s total
+(~3.34h) -- mean 703.3s/run, notably higher than an isolated single-run
+timing check (319.3s), attributed to CPU contention across the 10
+concurrent workers (a larger slowdown factor than Exp4's own memory-guard
+contention measurement, plausibly since this workload is CPU-bound, not
+memory-bound).
+
+**Result: `const=0.240940`.** Search-set empirical error was 0.0 in all
+three regimes. **Held-out validation flagged a real generalization
+concern**, not swept under the rug: the "moderate" regime's held-out error
+was 0.10 -- 4x the required `delta/2=0.025` bar -- even though its
+search-set error was 0 (`held_out_generalizes: false` in `configs/
+calibration_tas_fw.yaml`). Reported and carried forward as an open caveat
+on this constant, same as `configs/calibration.yaml`'s own precedent for
+flagging (not silently accepting) a held-out failure.
+
+**Stage 3 -- calibrated production run
+(`scripts/run_experiment3_tasfw_calibrated.py`,
+`configs/exp3_tasfw_calibrated.yaml`,
+`results/exp3_tasfw_calibrated/results.parquet`).** `tas-fw-calibrated` at
+Exp3's REAL `budget_cap=15000`, same real movie pairs as production (same
+`exp_id`/`seed_multiplier` mechanism as Stage 1), full 50 reps x 3
+versions. Despite the held-out caveat above, real deployment on real data
+showed no sign of it manifesting as a broken guarantee -- **zero
+delta-guarantee violations across all 150 rows** (every `stopped=True` run
+has ARI exactly 1.0, checked explicitly). Real results, vs. production's
+uncalibrated `tas-fw` row:
+
+| version | uncalibrated: ARI / stopped / mean &tau; | calibrated: ARI / stopped / mean &tau; |
+|---|---|---|
+| `exp3_1` | 1.000 / 38% / 13,660 | 1.000 / **100%** / 3,092 |
+| `exp3_2` | 1.000 / 70% / 9,942 | 1.000 / **100%** / 2,196 |
+| `exp3_3` | 1.000 / 4% / 14,928 | **0.967** / **50%** / 11,562 |
+
+Honest finding, not a free lunch: convergence/certification rate improves
+dramatically everywhere (4-12.5x), with ARI unchanged on `exp3_1`/`exp3_2`
+but a real, small accuracy cost on `exp3_3` (1.000 to 0.967, i.e. -3.3pp)
+traded for that version's 12.5x convergence-rate gain (4% to 50%) -- a
+favorable trade, not a strictly free improvement.
+
+**Implementation summary**: `kabc/environments.py` gained
+`DiscretePMFPairEnv`; `kabc/algorithms/tas_fw.py`'s `fit()` is now a thin
+wrapper over a private `_fit(..., const=1.0, record_full_trajectory=False)`
+(public interface unchanged, verified byte-identical behavior at
+`const=1.0`); `src/kabc/plotting.py` gained `tas-fw-0.1x`/`tas-fw-0.2x`/
+`tas-fw-calibrated` color/label/linestyle/marker entries (lighter greens
+for the fixed-budget variants, a darker/more saturated green for the
+calibrated row, following the existing "-0.5x lighter" convention
+in reverse for the calibrated row since it is the intended replacement, not
+a cruder variant). `notebooks/03_movielens_random_pairs.ipynb` optionally
+merges both `results/exp3_tasfw_lowbudget/` and
+`results/exp3_tasfw_calibrated/` into its existing per-version dataframes
+if those files exist (gracefully falling back to the original 6-row
+behavior if absent -- never required), and adds a dedicated focused
+4-algorithm comparison (`kabc`/`acb`/`tas-fw`/`tas-fw-calibrated`, all four
+metrics) alongside the full comparison.
+
+---
+
+## Experiment 4 — MovieLens prototypes: kabc's decision rule vs. unif-kkm's k-means under real imbalance
+
+**Claim tested.** Is kabc's decision rule (pairwise variance-aware threshold
++ connected components) more robust than unif-kkm's k-means under
+heterogeneous difficulty and real cluster-size imbalance? Both methods run
+at the SAME (matched) budget on real MovieLens-1M rating distributions as
+prototypes -- any ARI gap is attributable to the decision rule, not sampling
+allocation.
+
+**CLEAN REDESIGN (2026-09-16), replacing the earlier 4-condition
+(`fixed`/`resampled`/`track_a`/`track_b`) x 6-algorithm version entirely.**
+That version's own results/notebook/docs content is superseded, not merged
+with this one -- `git log` has the full history if it's ever needed. Three
+changes, each driven directly by what the earlier version's own real data
+showed:
+1. **Two algorithms only**: `kabc` and `unif-kkm-1x` (matched-budget). The
+   earlier version's `lowfixed`/`midfixed`/`highfixed`/`naive` rows served
+   their purpose (establishing that unif-kkm loses even with MORE budget
+   than kabc used, isolating decision-rule quality from budget scarcity --
+   see the real numbers in the prior git history) but added roster
+   complexity beyond what the final claim needs; matched-budget
+   `unif-kkm-1x` alone is the one comparison this experiment is actually
+   about.
+2. **Two settings, both resampled real data, no hand-picked fixed
+   instance**: the earlier version's `resampled` condition (K=7, moderate
+   imbalance) is kept, renamed `baseline`; `fixed` (illustrative-only) and
+   `track_b` (scale-by-arms, which showed no effect worth a dedicated
+   setting) are dropped; `track_a` (K=12, more clusters) is replaced by
+   `amplified_imbalance`, which resamples every rep (K=12, real movies) at
+   `track_a`'s own confirmed-cleanest imbalance ratio, pushed further
+   (20:2, not 12:2) -- see `track_a`'s real per-pair/per-size breakdown
+   below for why this specific regime was chosen deliberately, not
+   arbitrarily.
+3. **Memory guard override, real-verified**: the earlier version's honest
+   convergence ceiling was k<=7 (`budget_cap`, and independently the
+   original 11-worker/4x-safety memory guard, both blocked k=8). Real
+   measurement (not just relaxing the formula) showed real headroom to
+   raise this to k<=8 for both settings at a real, reduced concurrency this
+   experiment actually uses (`n_jobs=5`, not 10-11) -- see "Memory guard
+   override" below for the full real-data justification.
+
+### Algorithms: 2 rows per (setting, rep)
+
+- **`kabc`**: base algorithm, calibrated `c_cal=0.103516` (same frozen
+  constant as Experiments 1-3).
+- **`unif-kkm-1x`**: budget = that rep's own realized `tau_kabc` (matched-
+  budget design -- kabc's doubling trick samples every arm uniformly per
+  round, so a matched budget gives both methods identical per-arm sample
+  counts; any ARI gap is attributable to the decision rule, not sampling
+  allocation).
+
+### Both settings: the same generalized mean-gap resampling mechanism
+
+Mirrors Experiment 3's own `exp3_3` mechanism exactly (bounded mean-gap
+eligibility, UNIFORM pick among eligible candidates, not MMD²-maximizing
+cherry-pick), generalized from the earlier design to support any number of
+generic anchors (`scripts/run_experiment4.py`'s `_choose_resampled_prototypes`
+was hardcoded to exactly 3; `amplified_imbalance` needs 8):
+
+1. **Close pair** (roles `close_a`/`close_b`): scan a random movie-index
+   permutation for the first candidate A with ≥1 eligible B where
+   `|mean_A − mean_B| ≤ 0.25` (Experiment 3's own tolerance, reused
+   verbatim); uniform pick among eligible B.
+2. **Far pair** (roles `far_large`/`far_small`): scan the same permutation
+   (excluding A, B) for the first candidate C with ≥1 eligible D where
+   `|mean_C − mean_D| ≥ 0.5`; uniform pick among eligible D.
+3. **Generic anchors** (`generic_1..generic_N`, N = 3 for `baseline`, 8 for
+   `amplified_imbalance`): uniform random draw from the remaining pool,
+   unconstrained -- real per-rep difficulty varies more than a fixed
+   instance would (no separation floor applied to these), which the fixed
+   `budget_cap` below is exactly the mechanism that turns into a graceful
+   near-miss rather than a crash.
+4. Which of (A,B) gets `close_a` vs. `close_b`, and which of (C,D) gets
+   `far_large` vs. `far_small`, is itself randomized per rep.
+
+**Why a fixed `budget_cap`, not `s_star_formula`**: unchanged reasoning from
+the earlier design -- mean-gap alone does not tightly bound MMD² (real
+catalog pairs within the close pair's own tolerance were found with MMD² as
+low as `0.00001`), so a formula-derived cap risks the Gram-matrix memory-wall
+documented in "Known limitation" below. An unusually hard draw instead
+produces a graceful `stopped=False` near-miss under a fixed cap.
+
+### Memory guard override: real-verified, not just the relaxed formula
+
+The original memory guard (`kabc.py`'s `MEMORY_GUARD_*`, unchanged and still
+the default for every other caller) assumes 11 concurrent workers and a 4×
+safety factor, trip point `n_k > 2852`. This experiment runs at `n_jobs=5`
+(not 10-11) and needed k=8 (`n_k≈4602` at N=40, `n_k≈4933` at N=76) to be
+reachable to raise the honest convergence ceiling above k=7. Before changing
+anything, this was verified with real measurements, not just plugging
+smaller numbers into the formula:
+
+- **Real single-process peak RSS** for a full k=8-scale computation (all
+  780 pairs, N=40, n=4602 -- `mmd2_plugin` + `rkhs_variance` across every
+  arm pair, the actual memory-dominant part of `_cluster_once`): **627.7
+  MB**. The formula's own "3 Gram matrices, no safety padding" estimate at
+  this n is 484.9 MB -- so the REAL overhead beyond the pure 3-matrix model
+  is only ~1.3×, not the original design's unverified 4×.
+- **5 real concurrent OS processes**, each running the identical full
+  k=8-scale computation independently (1 BLAS thread each, matching the
+  real pipeline's `threadpoolctl.threadpool_limits(limits=1)` convention):
+  peak RSS **626.4-626.5 MB per worker** (consistent with the single-process
+  measurement), sum **3.06 GiB**, real wall-clock 1242.4s (vs. 855.6s
+  single-process -- a real ~1.45× slowdown from genuine CPU/memory
+  contention, priced into the wall-clock estimate below).
+- **`vm_stat` before/after**: swapouts unchanged (10,429,231 → 10,429,231,
+  delta 0 -- no NEW memory pressure-induced swapping during the run); free
+  pages increased (574,014 → 778,566). No thrashing, not merely "under the
+  formula's ceiling."
+
+**Chosen override: `memory_guard_n_workers=5, memory_guard_safety_factor=2`**
+(passed through `scripts/common.py`'s `_kabc_fit`, which accepts these as
+optional passthrough kwargs -- additive, backward-compatible; Experiments
+1-3's own calls pass neither, keeping the original 11-worker/4×
+assumption entirely unchanged). This gives a new trip point
+`n_k > 5982.6` -- a **30% margin** over N=40's `n_8=4602` and a **21%
+margin** over N=76's `n_8=4933` (real margin, not merely clearing the
+threshold). `n_workers=5` matches this experiment's own real `n_jobs`
+exactly, rather than being a conservative over-estimate the way Experiments
+1-3's 11-vs-10 margin is.
+
+**Why not push further (e.g., to allow k=9, `n_k≈9200-9900`)?** Checked and
+rejected: the real measured per-worker memory scales with `n²`. Projecting
+the real 627.7 MB/4602² measurement to `n≈10,000` at 5 workers gives
+**~14.5 GiB** total -- against this repo's own documented 16GB target
+machine (`MEMORY_GUARD_SAFE_TOTAL_BYTES`'s own comment), that leaves under
+1.5 GiB for the OS, Python/joblib overhead, and the results accumulating in
+memory. Even at **zero safety margin** (factor=1, no padding at all), 5
+workers only reaches `n≈8,461` -- still short of 10,000. Reaching that
+region safely would require cutting workers further (to ~2-3), trading real
+parallelism for reach; not pursued here since k=8 already gives both
+settings a genuine, real-margin-verified convergence ceiling above the
+budget-cap-driven k=7 limit the earlier design had.
+
+### Setting `baseline` (K=7, N=40)
+
+Same role/count structure as the earlier design's `resampled` condition:
+`far_large=12, far_small=2, close_a=5, close_b=4, generic_1=8, generic_2=6,
+generic_3=3`. `budget_cap=400,000` -- covers k=8's full cumulative cost
+(360,520) with margin (k=9's cumulative would be far beyond both this
+budget and the memory guard, so this is a genuine k<=8 ceiling, not a cap
+papering over a deeper limit).
+
+### Setting `amplified_imbalance` (K=12, N=76)
+
+Same resampling mechanism, but K=12 and a far-pair ratio of 20:2 (10:1, not
+`baseline`'s 12:2/6:1) -- the regime where the earlier design's `track_a`
+(K=12, more clusters, real 50-rep production data) showed the cleanest
+imbalance-specific signal:
+
+- `ari_far_pair` (0.68-0.79 across unif-kkm variants) consistently *below*
+  `ari_close_pair` (0.86-0.91) -- unif-kkm did worse on the pair that is
+  statistically the EASIER of the two to separate (MMD²=0.168, well
+  separated) but also the size-imbalanced one, and comparatively better on
+  the tight-but-balanced close pair (MMD²=0.020).
+- `misclass_rate_small` (0.107-0.132) ran ~1.6-2× `misclass_rate_large`
+  (0.064-0.072) across every unif-kkm variant -- the classic k-means
+  size-equalization bias.
+- kabc showed neither asymmetry (`ari_close_pair`/`ari_far_pair` =
+  0.986/0.999; `misclass_rate_large`/`_small` = 0.003/0.012).
+
+`amplified_imbalance` pushes the far pair's imbalance ratio from 12:2 to
+20:2 specifically to stress this same, already-confirmed mechanism harder,
+not to explore a new one. `counts_by_role`: `far_large=20, far_small=2,
+close_a=5, close_b=4, generic_1..generic_8 = 10,8,7,6,5,4,3,2` (the generic
+sizes reused from `track_a`'s own real, catalog-verified values -- though
+here every rep resamples which real movies fill every role, generic anchors
+included, not a fixed instance). `budget_cap=800,000` -- covers k=8's full
+cumulative cost (735,148 at N=76) with comparable proportional margin to
+`baseline`.
+
+### Metrics
+
+Standard `tau`/`stopped`/`ari`/`error`, plus (carried over unchanged from
+the earlier design, since both were essential to interpreting `track_a`'s
+and `resampled`'s results there):
+- **Per-pair ARI breakdown** (`ari_close_pair`, `ari_far_pair`): ARI
+  restricted to just the close pair's own arms, and separately just the far
+  pair's own arms.
+- **Per-prototype-size misclassification** (`misclass_rate_large`,
+  `misclass_rate_small`): best-overlap (Hungarian) alignment of recovered
+  to true clusters, per-arm correctness under that alignment, aggregated by
+  whether that arm's own prototype's count is `>=` or `<` that instance's
+  own median count.
+
+### Implementation
+
+`scripts/run_experiment4.py` (config: `configs/exp4.yaml`) -- both settings
+now build a FRESH environment every rep (Experiment 3's fresh-env-per-rep
+pattern; there is no more `fixed`-style grid-point-reuse condition in this
+experiment). `n_jobs=5` (not the usual 10-11 -- see "Memory guard override"
+above). 50 reps, `rep_start`/resume support identical to the other three
+scripts. **COMPLETE (2026-09-17):** full 50-rep run finished for both
+settings, clean exit, no errors; `results/exp4_baseline/results.parquet`
+and `results/exp4_amplified_imbalance/results.parquet` each hold 100 rows
+(50 reps × 2 algorithms), reps 0-49.
+
+### Results: real, full 50-rep run (2026-09-17)
+
+Headline: kabc's mean ARI stays high and degrades only slightly from
+`baseline` to `amplified_imbalance` (0.964 → 0.913); `unif-kkm-1x`'s mean
+ARI, at the IDENTICAL matched per-rep budget (that rep's own `tau_kabc`),
+drops much further (0.668 → 0.489). The imbalance-robustness gap this
+experiment was designed to isolate is real, and widens exactly as intended
+when the far pair's size ratio is pushed from 12:2 to 20:2.
+
+| setting | algorithm | mean ARI (±std) | convergence rate | mean τ |
+|---|---|---|---|---|
+| `baseline` (K=7, N=40, cap=400,000) | `kabc` | 0.964 ± 0.059 | 0.66 (33/50) | 285,492 |
+| `baseline` | `unif-kkm-1x` | 0.668 ± 0.148 | 1.00 (by construction) | 285,492 (tied) |
+| `amplified_imbalance` (K=12, N=76, cap=800,000) | `kabc` | 0.913 ± 0.083 | 0.32 (16/50) | 705,535 |
+| `amplified_imbalance` | `unif-kkm-1x` | 0.489 ± 0.079 | 1.00 (by construction) | 705,535 (tied) |
+
+**kabc's stopped-vs-capped ARI split** (the point estimate is already good
+well before the run formally certifies, same pattern documented for
+tas-fw's stopping rule elsewhere in this suite):
+- `baseline`: stopped=True (33/50) ARI=0.972±0.057; capped (17/50)
+  ARI=0.950±0.062 -- capping costs almost nothing.
+- `amplified_imbalance`: stopped=True (16/50) ARI=0.940±0.049; capped
+  (34/50) ARI=0.900±0.093 -- still a small gap despite K=12's much larger
+  majority-capped share.
+
+**Per-pair breakdown (close vs. far) and per-size misclassification** --
+the clearest real-data evidence of unif-kkm's k-means size-equalization
+bias, and its absence in kabc:
+
+| setting | algorithm | `ari_close_pair` | `ari_far_pair` | `misclass_large` | `misclass_small` |
+|---|---|---|---|---|---|
+| `baseline` | `kabc` | 0.927 ± 0.237 | 0.990 ± 0.039 | 0.010 ± 0.039 | 0.116 ± 0.154 |
+| `baseline` | `unif-kkm-1x` | 0.568 ± 0.401 | 0.526 ± 0.267 | 0.216 ± 0.113 | 0.249 ± 0.200 |
+| `amplified_imbalance` | `kabc` | 0.903 ± 0.248 | 0.994 ± 0.034 | 0.052 ± 0.065 | 0.223 ± 0.198 |
+| `amplified_imbalance` | `unif-kkm-1x` | 0.482 ± 0.339 | 0.201 ± 0.076 | 0.362 ± 0.066 | 0.427 ± 0.147 |
+
+**Key finding**: `unif-kkm-1x`'s `ari_far_pair` COLLAPSES under amplified
+imbalance (0.526 → 0.201), even though the far pair is BY CONSTRUCTION the
+easier-separated of the two (`|mean_A-mean_B| >= 0.5`, vs. the close pair's
+`<= 0.25`) -- direct evidence that k-means' size-equalization bias, not
+separation difficulty, is what's driving the failure: `misclass_rate_large`
+nearly doubles (0.216 → 0.362) as the size ratio worsens from 12:2 to 20:2.
+kabc shows the opposite pattern -- `ari_far_pair` if anything IMPROVES
+slightly (0.990 → 0.994) and `misclass_rate_large` stays small (0.010 →
+0.052) -- its decision rule has no comparable size-driven failure mode.
+kabc's own convergence rate (fraction of reps reaching a fully CERTIFIED
+stop, not point-estimate quality) drops as expected with K (0.66 → 0.32,
+since `amplified_imbalance`'s K=12/N=76 needs more of the doubling schedule
+and hits `budget_cap` before finishing more often) -- but as the
+stopped-vs-capped split above shows, this does not translate into a
+comparable ARI cost.
+
 ---
 
 ## Known limitation: unbounded Gram-matrix cost at hard grid points (open problem)
@@ -1341,38 +1751,52 @@ full recomputation each time) -- not attempted here.
 
 Workflow: `make data` → `make movielens-207` → `make calibrate` → `make smoke`
 (experiments 1-2, SMOKE_TEST mode, < 10 min laptop) →
-`make exp1 exp2 exp3` (every experiment via its own dedicated script --
+`make exp1 exp2 exp3 exp4` (every experiment via its own dedicated script --
 there is no shared grid engine anymore, see `scripts/common.py`'s module
-docstring -- see `make smoke-exp3` for a slower, separate exp3 sanity check
-that includes tas-fw) → notebooks for figures.
+docstring -- see `make smoke-exp3`/`make smoke-exp4` for slower, separate
+sanity checks: exp3 includes tas-fw, exp4 includes kabc's real k=8 pathway)
+→ notebooks for figures.
 ​```
 kernel-active-bandit/
-├── configs/                  # yaml per experiment + calibration.yaml
+├── configs/                  # yaml per experiment + calibration.yaml, plus ad hoc
+│                             # exp3_tasfw_lowbudget.yaml / exp3_tasfw_calibrated.yaml /
+│                             # calibration_tas_fw.yaml (Exp3 tas-fw follow-up, see that section)
 ├── data/                     # gitignored; download script + build_movielens_207.py fill it
 ├── docs/
 │   └── experiments.md        # this file
 ├── notebooks/
 │   ├── 01_gaussian_mixtures.ipynb
 │   ├── 02_same_mean_shapes.ipynb
-│   └── 03_movielens_random_pairs.ipynb
+│   ├── 03_movielens_random_pairs.ipynb
+│   └── 04_movielens_prototypes.ipynb
 ├── results/                  # gitignored parquet outputs
 ├── scripts/
 │   ├── download_movielens.py
-│   ├── build_movielens_207.py    # builds data/ml-1m-207/ for Experiment 3
+│   ├── build_movielens_207.py    # builds data/ml-1m-207/, used by Experiments 3 and 4
 │   ├── calibrate_constants.py
-│   ├── common.py             # shared calibrated-fit wrappers, grid/budget_cap helpers -- see its module docstring
+│   ├── common.py             # shared calibrated-fit wrappers, grid/budget_cap helpers,
+│   │                         # memory-guard-override passthrough (Experiment 4 only,
+│   │                         # additive/opt-in) -- see its module docstring
 │   ├── run_experiment1.py    # CLI: python -m scripts.run_experiment1 configs/exp1.yaml
 │   ├── run_experiment2.py    # CLI: python -m scripts.run_experiment2 configs/exp2.yaml
-│   └── run_experiment3.py    # CLI: python -m scripts.run_experiment3 configs/exp3.yaml
+│   ├── run_experiment3.py    # CLI: python -m scripts.run_experiment3 configs/exp3.yaml
+│   ├── run_experiment4.py    # CLI: python -m scripts.run_experiment4 configs/exp4.yaml
+│   ├── calibrate_tas_fw.py   # ad hoc, NOT part of the frozen Exp3 design (see that section's
+│   │                         # follow-up) -- freezes configs/calibration_tas_fw.yaml
+│   ├── run_experiment3_tasfw_lowbudget.py    # ad hoc: tas-fw-0.1x/-0.2x, own results file
+│   └── run_experiment3_tasfw_calibrated.py   # ad hoc: tas-fw-calibrated, own results file
 ├── src/kabc/
 │   ├── algorithms/           # kabc.py, acb.py, tas_fw.py, baselines.py
-│   ├── environments.py       # GMM, same-mean families, MovieLens pair env
+│   ├── environments.py       # GMM, same-mean families, MovieLens pair env (Exp 3),
+│   │                         # multi-prototype env (Exp 4, MovieLensMultiEnv), and
+│   │                         # DiscretePMFPairEnv (tas-fw calibration only, synthetic)
 │   ├── kernels.py            # RBF, median heuristic, MMD estimators (incl. variance est.)
 │   ├── thresholds.py         # variance-aware + sub-Gaussian, calibrated constants
 │   ├── metrics.py            # ARI, error, s_star computation
 │   └── plotting.py           # shared figure style (matplotlib, paper-ready)
 ├── tests/                    # pytest: MMD estimator correctness, threshold coverage,
 │                             # env sanity (means/variances), interface contracts
-├── Makefile                  # data, movielens-207, calibrate, exp1/2/3, smoke, smoke-exp3, test
+├── Makefile                  # data, movielens-207, calibrate, exp1/2/3/4, smoke,
+│                             # smoke-exp3, smoke-exp4, test
 └── pyproject.toml            # numpy, scipy, scikit-learn, joblib, pyarrow, matplotlib
 ​```

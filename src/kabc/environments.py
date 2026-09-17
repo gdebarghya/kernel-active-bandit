@@ -305,3 +305,85 @@ class MovieLensPairEnv(Environment):
     def pull(self, arm_index: int, rng: np.random.Generator) -> float:
         cluster = self._validate_arm_index(arm_index)
         return float(rng.choice(self.prototype_pools[cluster]))
+
+
+# --------------------------------------------------------------------------
+# tas-fw calibration only: synthetic finite-alphabet pair (NOT real MovieLens
+# data -- see docs/experiments.md's tas-fw calibration section)
+# --------------------------------------------------------------------------
+
+class DiscretePMFPairEnv(Environment):
+    """A deterministic, purely synthetic finite-alphabet pair (K=2) on the
+    rating support {1,...,5} -- used ONLY to calibrate tas-fw's beta(t,delta)
+    threshold (scripts/calibrate_tas_fw.py), never in Experiment 3 itself.
+
+    Deliberately NOT built from any real MovieLens data (movie IDs, pools,
+    titles): mirrors GaussianMixtureEnv's role for kabc/kabc-sg/acb's own
+    calibration -- a separate, synthetic, fully deterministic instance,
+    distinct from the real data the calibrated constant will later be
+    deployed against (avoids calibrating against the same real distribution
+    Experiment 3 draws its evaluation instances from). `pmf_a`/`pmf_b` are
+    explicit 5-element probability vectors over {1,2,3,4,5} (each must sum
+    to 1) -- no fitting to real rating data anywhere in this class.
+
+    N/K/alphabet size are pinned to Experiment 3's own real deployment scale
+    (N=8, K=2, alphabet=5) by construction (`arms_per_prototype` defaults to
+    4, matching `configs/exp3.yaml`'s `arms_per_prototype: 4`) -- NOT an
+    arbitrary choice: tas-fw's beta(t,delta) (Eq. 66) depends on
+    `K*alphabet_size + K_tilde(=N) + 2`, so a calibration instance built at a
+    different N/K/alphabet would calibrate a constant that doesn't correctly
+    reflect the union-bound cost of the regime it's meant to be deployed
+    into.
+    """
+
+    _SUPPORT = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+
+    def __init__(self, pmf_a: np.ndarray, pmf_b: np.ndarray, arms_per_prototype: int = 4):
+        pmf_a, pmf_b = np.asarray(pmf_a, dtype=float), np.asarray(pmf_b, dtype=float)
+        for name, pmf in [("pmf_a", pmf_a), ("pmf_b", pmf_b)]:
+            if pmf.shape != (5,):
+                raise ValueError(f"{name} must have exactly 5 entries (support {{1,...,5}}), got shape {pmf.shape}")
+            if pmf.min() < 0 or not np.isclose(pmf.sum(), 1.0):
+                raise ValueError(f"{name} must be a valid probability vector (>=0, sums to 1), got {pmf!r}")
+        self.K = 2
+        self.arms_per_prototype = arms_per_prototype
+        self.n_arms = 2 * arms_per_prototype
+        self.true_partition = _balanced_partition(self.n_arms, 2)
+        self.pmfs = [pmf_a, pmf_b]
+
+    def pull(self, arm_index: int, rng: np.random.Generator) -> float:
+        cluster = self._validate_arm_index(arm_index)
+        return float(rng.choice(self._SUPPORT, p=self.pmfs[cluster]))
+
+
+class MovieLensMultiEnv(Environment):
+    """Experiment 4: K real MovieLens prototypes with independent, generally
+    unequal arms_per_prototype counts (real long-tailed size imbalance).
+    Generalizes MovieLensPairEnv (fixed K=2, equal arms_per_prototype) to
+    arbitrary K -- everything else (bootstrap-resample a prototype's real
+    rating pool per pull) is identical.
+    """
+
+    def __init__(
+        self,
+        pools: list[np.ndarray],
+        counts: list[int],
+        movie_ids: list[int],
+        titles: list[str],
+    ):
+        if not (len(pools) == len(counts) == len(movie_ids) == len(titles)):
+            raise ValueError(
+                f"pools, counts, movie_ids, titles must all have the same length (K); "
+                f"got {len(pools)}, {len(counts)}, {len(movie_ids)}, {len(titles)}"
+            )
+        self.K = len(counts)
+        self.n_arms = sum(counts)
+        self.true_partition = np.repeat(np.arange(self.K), counts)
+        self.prototype_pools = pools
+        self.counts = counts
+        self.movie_ids = movie_ids
+        self.titles = titles
+
+    def pull(self, arm_index: int, rng: np.random.Generator) -> float:
+        cluster = self._validate_arm_index(arm_index)
+        return float(rng.choice(self.prototype_pools[cluster]))

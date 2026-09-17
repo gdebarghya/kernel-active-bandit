@@ -5,7 +5,10 @@ a nonparametric method for actively clustering bandit arms based on their full
 distributions, not just means. Companion code for our paper (arXiv 2601.07535).
 
 Compares KABC against parametric baselines (ACB, TaS-FW) and a uniform-sampling
-baseline, on synthetic Gaussian mixtures and real MovieLens-1M rating data.
+baseline, on synthetic Gaussian mixtures and real MovieLens-1M rating data,
+including a dedicated experiment (Experiment 4) testing whether KABC's
+decision rule holds up better than kernel k-means under real, resampled
+cluster-size imbalance.
 
 Full experimental design, algorithm details, and figure specs: see
 [`docs/experiments.md`](docs/experiments.md).
@@ -30,13 +33,15 @@ run `make data` to auto-download it.
 
 ```bash
 make data           # fetch/verify MovieLens-1M
-make movielens-207  # build data/ml-1m-207/ (the >=1000-rating movie pool exp3 samples pairs from)
+make movielens-207  # build data/ml-1m-207/ (the >=1000-rating movie pool experiments 3-4 sample from)
 make calibrate       # freeze practical threshold constants
 make smoke           # quick sanity run, experiments 1-2, reduced grid
 make smoke-exp3      # separate, slower sanity run for experiment 3 (includes tas-fw)
+make smoke-exp4      # separate, slower sanity run for experiment 4 (real k=8 pathway)
 make exp1            # Experiment 1: Gaussian mixtures
 make exp2            # Experiment 2: same-mean, different-shape instances
 make exp3            # Experiment 3: MovieLens random pairs
+make exp4            # Experiment 4: MovieLens prototypes, kabc vs. unif-kkm under imbalance
 make test            # run test suite
 ```
 

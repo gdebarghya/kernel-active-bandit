@@ -91,8 +91,19 @@ def _load_c_cal() -> dict[str, float | None]:
 _C_CAL = _load_c_cal()
 
 
-def _kabc_fit(env, delta, budget_cap, rng):
-    return _kabc_fit_internal(env, delta, budget_cap, rng, threshold="variance-aware", const=_C_CAL.get("kabc") or 1.0)
+def _kabc_fit(env, delta, budget_cap, rng, **memory_guard_kwargs):
+    """`**memory_guard_kwargs` passes through to `kabc._fit`'s
+    `memory_guard_n_workers`/`memory_guard_safety_factor` kwargs -- empty for
+    every existing caller (Experiments 1-3), which keeps the original,
+    unchanged 11-worker/4x-safety assumption. Experiment 4's own script is
+    the only caller expected to pass these, real-verified for its own
+    n_jobs=5 configuration -- see kabc.py's `_fit` docstring and
+    docs/experiments.md's Experiment 4 "Memory guard override" note.
+    """
+    return _kabc_fit_internal(
+        env, delta, budget_cap, rng, threshold="variance-aware", const=_C_CAL.get("kabc") or 1.0,
+        **memory_guard_kwargs,
+    )
 
 
 def _kabc_sg_fit(env, delta, budget_cap, rng):

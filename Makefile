@@ -1,4 +1,4 @@
-.PHONY: data movielens-207 calibrate smoke smoke-exp3 exp1 exp2 exp3 test clean
+.PHONY: data movielens-207 calibrate smoke smoke-exp3 smoke-exp4 exp1 exp2 exp3 exp4 test clean
 
 data:
 	python scripts/download_movielens.py
@@ -23,6 +23,13 @@ smoke:
 smoke-exp3:
 	SMOKE_TEST=1 python -m scripts.run_experiment3 configs/exp3.yaml
 
+# exp4 (MovieLens prototypes: kabc vs unif-kkm under imbalance) is also
+# excluded from `smoke`, same reasoning as exp3: even SMOKE_TEST=1 (5 reps)
+# runs kabc's real doubling trick across 4 conditions including track_a/b's
+# larger instances, which alone can take minutes.
+smoke-exp4:
+	SMOKE_TEST=1 python -m scripts.run_experiment4 configs/exp4.yaml
+
 exp1:
 	python -m scripts.run_experiment1 configs/exp1.yaml
 
@@ -31,6 +38,9 @@ exp2:
 
 exp3:
 	python -m scripts.run_experiment3 configs/exp3.yaml
+
+exp4:
+	python -m scripts.run_experiment4 configs/exp4.yaml
 
 test:
 	pytest tests/ -v

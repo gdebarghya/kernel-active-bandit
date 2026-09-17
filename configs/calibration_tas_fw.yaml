@@ -1,0 +1,23 @@
+# Written by scripts/calibrate_tas_fw.py -- see that script's module
+# docstring for the full protocol (synthetic DiscretePMFPairEnv instances,
+# trajectory-recording, offline-only ground truth). Separate from
+# configs/calibration.yaml (kabc/kabc-sg/acb), which this script never touches.
+# Do NOT hand-edit -- regenerate via `python -m scripts.calibrate_tas_fw`.
+const: 0.24094035602395245
+delta: 0.05
+budget_cap: 15000
+arms_per_prototype: 4
+n_reps_per_regime: 30
+regimes:
+- easy
+- moderate
+- hard
+search_errors_by_regime:
+  easy: 0.0
+  moderate: 0.0
+  hard: 0.0
+held_out_errors_by_regime:
+  easy: 0.0
+  moderate: 0.1
+  hard: 0.0
+held_out_generalizes: false

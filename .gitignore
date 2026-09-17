@@ -25,3 +25,6 @@ venv/
 
 # local Claude settings (machine-specific, not shared)
 .claude/
+
+# personal scratch notebook for coauthor discussion, not for the repo
+notebooks/deb-summarised-results.ipynb

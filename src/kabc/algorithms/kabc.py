@@ -311,22 +311,39 @@ class _MemoryGuardExceeded(Exception):
         )
 
 
-def _check_memory_guard(n: int) -> None:
+def _check_memory_guard(
+    n: int,
+    *,
+    n_workers: int = MEMORY_GUARD_N_WORKERS,
+    safety_factor: int = MEMORY_GUARD_SAFETY_FACTOR,
+) -> None:
     """Raises _MemoryGuardExceeded if attempting Gram-matrix computations at
     this `n` would be unsafe. Called at the TOP of `_cluster_once`, before
     any samples are pulled or any Gram matrix is built -- if we're going to
     refuse this `n`, there's no reason to spend the pulls first.
 
-    projected_bytes = MEMORY_GUARD_N_WORKERS * MEMORY_GUARD_MATRICES_PER_CALL
-        * MEMORY_GUARD_SAFETY_FACTOR * n**2 * 8 (bytes/float64), i.e. every
+    projected_bytes = n_workers * MEMORY_GUARD_MATRICES_PER_CALL
+        * safety_factor * n**2 * 8 (bytes/float64), i.e. every
     concurrent worker independently hitting the same PEAK simultaneous
     allocation (3 Gram matrices of shape (n,n), not N*(N-1)/2 or N of them --
     see MEMORY_GUARD_MATRICES_PER_CALL's docstring for why), times a safety
     margin.
+
+    `n_workers`/`safety_factor` default to the module-level MEMORY_GUARD_*
+    constants (the existing, unchanged, proven-safe assumption every
+    Experiment 1-3 call implicitly uses via `fit`/`fit_sg`/`fit_oracle` and
+    `scripts.common`'s calibrated-fit wrappers, none of which pass these
+    kwargs). They exist SPECIFICALLY so a caller that genuinely runs at a
+    different, real, verified concurrency/margin -- e.g. Experiment 4's
+    `run_experiment4.py`, which uses `n_jobs=5` (not 10-11) and was
+    empirically verified (real `kabc.fit` runs, real measured peak RSS, not
+    just this formula -- see docs/experiments.md's Experiment 4 "Memory
+    guard override" note) to need less safety margin than the 11-worker/4x
+    design was calibrated for -- can override them for ITS OWN calls only,
+    via `_fit`'s own kwargs below, without touching the default (and every
+    other caller's) behavior at all.
     """
-    projected_bytes = (
-        MEMORY_GUARD_N_WORKERS * MEMORY_GUARD_MATRICES_PER_CALL * MEMORY_GUARD_SAFETY_FACTOR * (n**2) * 8
-    )
+    projected_bytes = n_workers * MEMORY_GUARD_MATRICES_PER_CALL * safety_factor * (n**2) * 8
     if projected_bytes > MEMORY_GUARD_SAFE_TOTAL_BYTES:
         raise _MemoryGuardExceeded(n, projected_bytes)
 
@@ -341,6 +358,8 @@ def _cluster_once(
     *,
     threshold: Literal["variance-aware", "subgaussian"],
     const: float = 1.0,
+    memory_guard_n_workers: int = MEMORY_GUARD_N_WORKERS,
+    memory_guard_safety_factor: int = MEMORY_GUARD_SAFETY_FACTOR,
 ) -> tuple[np.ndarray, int]:
     """One call of Algorithm 1's CLUSTER(n, delta'): draw n fresh samples/arm,
     build the same-cluster graph via the pairwise threshold, return
@@ -352,11 +371,16 @@ def _cluster_once(
     `fit`/`fit_sg`; only scripts/calibrate_constants.py is expected to
     override it, via `_fit` below.
 
+    `memory_guard_n_workers`/`memory_guard_safety_factor` pass through to
+    `_check_memory_guard` -- see that function's own docstring for why these
+    exist and who is expected to override them (Experiment 4 only, via
+    `_fit`'s identically-named kwargs).
+
     Raises _MemoryGuardExceeded (via `_check_memory_guard`) before pulling
     any samples if this `n` would be unsafe to attempt -- see that function's
     docstring.
     """
-    _check_memory_guard(n)
+    _check_memory_guard(n, n_workers=memory_guard_n_workers, safety_factor=memory_guard_safety_factor)
     arm_samples = [_pull_batch(env, i, n, rng) for i in range(N)]
 
     if threshold == "variance-aware":
@@ -388,6 +412,8 @@ def _fit(
     *,
     threshold: Literal["variance-aware", "subgaussian"],
     const: float = 1.0,
+    memory_guard_n_workers: int = MEMORY_GUARD_N_WORKERS,
+    memory_guard_safety_factor: int = MEMORY_GUARD_SAFETY_FACTOR,
 ) -> Result:
     """Shared doubling-trick loop behind `fit`/`fit_sg`.
 
@@ -399,6 +425,21 @@ def _fit(
     `const` (default 1.0) is threaded through to `_cluster_once`'s threshold
     calls -- see its docstring. Not exposed via the public `fit`/`fit_sg`;
     scripts/calibrate_constants.py calls `_fit` directly to override it.
+
+    `memory_guard_n_workers`/`memory_guard_safety_factor` default to the
+    module-level MEMORY_GUARD_* constants (11 workers, 4x safety -- the
+    existing, unchanged assumption behind every Experiment 1-3 call and the
+    public `fit`/`fit_sg`/`fit_oracle`). Experiment 4's own dedicated script
+    is the ONLY caller expected to override these, via `scripts/common.py`'s
+    `_kabc_fit` passthrough -- real-verified for its own n_jobs=5 (not
+    10-11) configuration specifically: a real k=8-scale (n~4600-4900)
+    pairwise computation measured ~628 MB actual peak RSS per worker (not
+    the formula's much larger conservative estimate), and 5 real concurrent
+    OS processes at that scale were verified not to OOM/thrash on the real
+    machine -- see docs/experiments.md's Experiment 4 "Memory guard
+    override" note for the full real-data justification and exact numbers.
+    Not a change to the DEFAULT (every other caller keeps the original,
+    already-proven-safe 11-worker/4x assumption untouched).
     """
     N = env.n_arms
     K = env.K
@@ -428,7 +469,9 @@ def _fit(
 
         try:
             new_partition, num_clusters = _cluster_once(
-                env, N, n_k, delta_k, bandwidth, rng, threshold=threshold, const=const
+                env, N, n_k, delta_k, bandwidth, rng, threshold=threshold, const=const,
+                memory_guard_n_workers=memory_guard_n_workers,
+                memory_guard_safety_factor=memory_guard_safety_factor,
             )
         except _MemoryGuardExceeded as e:
             history.append({"stop_reason": STOP_REASON_MEMORY_GUARD, "k": k, "n_k": n_k, "reason": str(e)})

@@ -1,0 +1,45 @@
+# Ad hoc follow-up (NOT part of the frozen Experiment 3 design), run AFTER
+# scripts/calibrate_tas_fw.py freezes a calibrated const into
+# configs/calibration_tas_fw.yaml: re-runs tas-fw with that calibrated
+# threshold at Exp3's REAL production budget_cap=15000 (not the earlier
+# fixed-budget 1500/3000 probe), across the same 3 real versions, to check
+# whether calibration (not just cutting the budget) gets tas-fw to actually
+# certify more often on real data.
+#
+# SAME exp_id/seed_multiplier as configs/exp3.yaml on purpose: movie pairs
+# match production exp3 rep-for-rep (see
+# scripts/run_experiment3_tasfw_calibrated.py's module docstring).
+#
+# Writes to results/exp3_tasfw_calibrated/results.parquet -- a SEPARATE
+# file, never results/exp3_1|2|3/results.parquet (production, untouched).
+#
+# PROTOCOL: 10 reps first (timing estimate at n_jobs=10), then reps raised
+# to 50 (rep_start=10) to append the remaining 40 -- same resume mechanism
+# as every other dedicated script.
+
+exp_id: 3
+delta: 0.05
+reps: 50
+rep_start: 10
+seed_multiplier: 1000
+
+data_dir: data/ml-1m-207
+arms_per_prototype: 4   # N=8, K=2 -- identical to exp3
+budget_cap: 15000       # exp3's real production budget_cap (not the lowbudget probe's 1500/3000)
+
+n_jobs: 10
+
+versions:
+  - name: exp3_1
+    rule: max_mmd
+    comparison: le
+    mean_gap_tol: 0.25
+  - name: exp3_2
+    rule: uniform
+    comparison: range
+    mean_gap_min: 0.25
+    mean_gap_max: 1.0
+  - name: exp3_3
+    rule: uniform
+    comparison: le
+    mean_gap_tol: 0.25

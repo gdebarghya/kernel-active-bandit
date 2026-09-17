@@ -27,7 +27,7 @@ calling convention in experiment scripts.
   the reported budget tau. Never exclude them.
 - Calibrated threshold constants (c_cal) are frozen once in `configs/calibration.yaml`
   by `scripts/calibrate_constants.py`. Do not re-tune per experiment — reuse the
-  frozen value across Exp 1/2/3, per the calibration protocol in docs/experiments.md.
+  frozen value across Exp 1/2/3/4, per the calibration protocol in docs/experiments.md.
 - Notebooks in `notebooks/` only load results from `results/*.parquet` and plot —
   they must never silently recompute. If results are missing, fail loudly and point
   to the `make expN` target that generates them.
@@ -36,8 +36,10 @@ calling convention in experiment scripts.
 
 - `make data` — fetches/verifies MovieLens-1M in data/ml-1m/
 - `make calibrate` — freezes c_cal into configs/calibration.yaml
-- `make smoke` — all 3 experiments, reduced grid/reps, sanity check before a full run
-- `make exp1` / `exp2` / `exp3` — full experiment runs
+- `make smoke` — experiments 1-2, reduced grid/reps, sanity check before a full run
+  (`make smoke-exp3` / `make smoke-exp4` are separate, slower sanity checks — see
+  Makefile comments for why they're not folded into `make smoke`)
+- `make exp1` / `exp2` / `exp3` / `exp4` — full experiment runs
 - `make test` — pytest tests/
 
 ## Repo conventions
