@@ -106,6 +106,32 @@ def _kabc_fit(env, delta, budget_cap, rng, **memory_guard_kwargs):
     )
 
 
+def _kabc_fit_2x(env, delta, budget_cap, rng, **memory_guard_kwargs):
+    """kabc re-run with its calibrated threshold constant DOUBLED (2 * c_cal) --
+    a more conservative (larger) stopping threshold than the calibrated kabc
+    row. An ablation over the calibration constant itself (c_cal is ~0.1x the
+    theoretical constant, per docs/experiments.md section 0.2), not over
+    budget: runs as an independent base row at the grid point's full
+    budget_cap, own RNG substream -- unlike the old budget-truncated *-0.5x
+    rows this replaces, it is not tied to kabc's own realized tau.
+    """
+    return _kabc_fit_internal(
+        env, delta, budget_cap, rng, threshold="variance-aware",
+        const=(_C_CAL.get("kabc") or 1.0) * 2.0, **memory_guard_kwargs,
+    )
+
+
+def _kabc_fit_0p5x(env, delta, budget_cap, rng, **memory_guard_kwargs):
+    """kabc re-run with its calibrated threshold constant HALVED (0.5 * c_cal) --
+    a less conservative (smaller) stopping threshold. See `_kabc_fit_2x`'s
+    docstring for the shared rationale; this is its mirror-image counterpart.
+    """
+    return _kabc_fit_internal(
+        env, delta, budget_cap, rng, threshold="variance-aware",
+        const=(_C_CAL.get("kabc") or 1.0) * 0.5, **memory_guard_kwargs,
+    )
+
+
 def _kabc_sg_fit(env, delta, budget_cap, rng):
     return _kabc_fit_internal(env, delta, budget_cap, rng, threshold="subgaussian", const=_C_CAL.get("kabc-sg") or 1.0)
 

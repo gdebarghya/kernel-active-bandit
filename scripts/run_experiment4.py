@@ -16,7 +16,7 @@ cluster-size imbalance? Two settings, each its own results file
 CLEAN REDESIGN (2026-09-16), replacing the earlier 4-condition
 (fixed/resampled/track_a/track_b) x 6-algorithm version entirely -- that
 version's own results/notebook/docs sections are superseded, not merged.
-Two algorithms only (kabc, unif-kkm-1x, matched-budget) -- see
+Two algorithms only (kabc, unif-kkm, matched-budget) -- see
 configs/exp4.yaml's own module comment for the full rationale, including the
 real (not just formula) memory-guard verification that motivated dropping
 the hand-picked `fixed` instance and the `track_a`/`track_b` scale variants
@@ -43,7 +43,7 @@ PARALLELIZATION: across reps, n_jobs=5 (not the usual 10-11) -- `n_jobs`-
 sized batches, each a blocking `Parallel()` call (sandbox forces joblib's
 'multiprocessing' backend -- see scripts/common.py's module docstring).
 Inside one rep's worker, both settings' 2 algorithm rows run sequentially
-(kabc first, since unif-kkm-1x needs that same rep's realized tau_kabc).
+(kabc first, since unif-kkm needs that same rep's realized tau_kabc).
 
 METRICS: standard tau/stopped/ari/error, plus the per-pair ARI breakdown
 (`ari_close_pair`, `ari_far_pair`) and per-size misclassification rate
@@ -80,7 +80,13 @@ from scipy.optimize import linear_sum_assignment
 from kabc import metrics
 from kabc.algorithms.baselines import fit as unif_kkm_fit
 from kabc.environments import MovieLensMultiEnv, _movie_rating_distributions, _prototype_bandwidth, compute_pairwise_mmd2
-from scripts.common import SMOKE_TEST, SMOKE_TEST_MAX_REPS, _kabc_fit
+from scripts.common import SMOKE_TEST, SMOKE_TEST_MAX_REPS, _acb_fit, _kabc_fit
+
+# Fixed per-algorithm seed index (algo_seed = rep_seed*1000 + 100 + setting_idx*10 + this).
+# kabc=0, unif-kkm=1 are exactly what the original [kabc, unif-kkm] roster's enumerate()
+# gave, so existing rows keep their seeds; acb (added 2026-10-04, run as a separate
+# 50-rep pass by scripts/run_experiment4_acb.py) takes 2 and never collides.
+ALGO_SEED_IDX = {"kabc": 0, "unif-kkm": 1, "acb": 2}
 
 
 def _load_movie_pool(data_dir: Path):
@@ -233,11 +239,14 @@ def _fit_one_algorithm(algo_id: str, env, delta: float, condition_cfg: dict, rng
                         tau_kabc: float | None, memory_guard_kwargs: dict):
     if algo_id == "kabc":
         return _kabc_fit(env, delta, condition_cfg["budget_cap"], rng, **memory_guard_kwargs), condition_cfg["budget_cap"]
-    if algo_id == "unif-kkm-1x":
+    if algo_id == "unif-kkm":
         if tau_kabc is None:
-            raise RuntimeError("unif-kkm-1x requires kabc's tau to already be known this rep -- kabc must run first")
+            raise RuntimeError("unif-kkm requires kabc's tau to already be known this rep -- kabc must run first")
         this_budget = int(min(tau_kabc, condition_cfg["budget_cap"]))
         return unif_kkm_fit(env, delta, this_budget, rng), this_budget
+    if algo_id == "acb":
+        # same budget cap as kabc (common-budget convention); best-effort partition at the cap
+        return _acb_fit(env, delta, condition_cfg["budget_cap"], rng), condition_cfg["budget_cap"]
     raise ValueError(f"unknown algorithm id: {algo_id!r}")
 
 
@@ -269,8 +278,8 @@ def _process_one_rep_one_setting(
 
     rows = []
     tau_kabc = None
-    for algo_idx, algo_id in enumerate(algo_ids):
-        algo_seed = rep_seed * 1000 + 100 + setting_idx * 10 + algo_idx
+    for algo_id in algo_ids:
+        algo_seed = rep_seed * 1000 + 100 + setting_idx * 10 + ALGO_SEED_IDX[algo_id]
         rng = np.random.default_rng(algo_seed)
         t0 = time.time()
         with threadpoolctl.threadpool_limits(limits=1):

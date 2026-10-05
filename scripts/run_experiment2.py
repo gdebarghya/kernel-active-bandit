@@ -2,8 +2,9 @@
 
 Runs Experiment 2 (docs/experiments.md, "Experiment 2" section): three
 same-mean, different-shape instance families (scale_pair, moment_matched_
-mixture, ring_blob), 6 grid points total (see GRID TRIM NOTE below), 8
-algorithm rows per (grid point, rep). Saves results/exp2/results.parquet.
+mixture, ring_blob), 3 grid points total -- one representative setting per
+family (see GRID TRIM NOTE below), 5 algorithm rows per (grid point, rep).
+Saves results/exp2/results.parquet.
 
 REDESIGN NOTE: this experiment used to run through `run_experiment.py`'s
 shared grid engine, exactly like Experiment 1 originally did. It moved to
@@ -20,40 +21,41 @@ loop iterates over `config["instances"]` the way the old shared engine did,
 rather than assuming a single family.
 
 PARALLELIZATION: reps are the parallelization unit (mirroring
-scripts/run_experiment1.py's design), NOT the 8 algorithm rows within one
+scripts/run_experiment1.py's design), NOT the 5 algorithm rows within one
 rep. `rep_indices` (per grid point) are chunked into `n_jobs`-sized batches;
 each batch runs one blocking `Parallel(n_jobs=n_jobs)` call over
-`_process_one_rep`. INSIDE one call, all 8 algorithm rows run SEQUENTIALLY
-in a single worker process -- required by the tau-dependency chains below.
-The ENVIRONMENT is built ONCE PER GRID POINT, not once per rep: none of
-scale_pair/moment_matched_mixture/ring_blob's constructors take an rng or
-seed -- their instance geometry is a deterministic closed-form function of
-their kwargs, so every rep at a grid point faces the exact identical
-instance; only each algorithm's own pull-noise rng substream differs by rep.
+`_process_one_rep`. INSIDE one call, all 5 algorithm rows run sequentially
+in a single worker process (no longer a correctness requirement -- every
+row is independent, see ALGORITHM ROSTER below -- just the simplest way to
+share one built `env`). The ENVIRONMENT is built ONCE PER GRID POINT, not
+once per rep: none of scale_pair/moment_matched_mixture/ring_blob's
+constructors take an rng or seed -- their instance geometry is a
+deterministic closed-form function of their kwargs, so every rep at a grid
+point faces the exact identical instance; only each algorithm's own
+pull-noise rng substream differs by rep.
 SANDBOX: importing scripts.common forces joblib's 'multiprocessing' backend
 process-wide -- see that module's docstring for the full detail.
 
-ALGORITHM ROSTER (8 rows): IDENTICAL to Experiment 1's -- kabc,
-unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x, kabc-sg, kabc-sg-0.5x, acb,
-acb-0.5x. Three independent BASE algorithms (kabc, kabc-sg, acb) are each
-run once at the grid point's full `budget_cap`; each is then, separately,
-re-run at `budget_cap = min(0.5 * its_own_tau, budget_cap)`, with a fresh
-independent RNG substream, testing how conservative THAT algorithm's own
-stopping rule is, per rep. `unif-kkm-1x`/`unif-kkm-0.5x` are tied
-specifically to `kabc`'s tau, testing whether active/adaptive selection
-beats naive uniform sampling at a matched budget. See DERIVED_VARIANTS
-below for the exact mapping, and `_reorder_bases_first` for how the three
-independent dependency chains are resolved regardless of the config file's
-own algorithm ordering.
+ALGORITHM ROSTER (5 rows): matches Experiment 1's current roster minus
+`acb-gaussian` (Gaussian-only, not applicable to these non-Gaussian
+families) -- kabc, kabc-2x, kabc-0.5x, kabc-sg, acb. All independent (no
+row's budget_cap or RNG depends on another row's realized tau), each run
+once at the grid point's full `budget_cap`, own RNG substream.
 
-MULTIPLIER CHANGED from an earlier 0.9x to 0.5x (2026-09-14) -- identical
-reasoning to Experiment 1's own module docstring: KABC's doubling-trick
-schedule quantizes its own realized tau to a small set of round-boundary
-checkpoints, and the FINAL round alone typically costs roughly half of the
-total realized tau, so a 0.9x cut cannot actually test "10% less budget" --
-it almost always lands in the same "one checkpoint short" bucket as a much
-larger cut would. 0.5x is honest about what is actually being tested: a
-meaningfully smaller, still-real budget cut.
+REVISION (2026-10-03): dropped `unif-kkm` entirely (it was tied to kabc's
+own realized tau, testing active/adaptive vs. naive uniform sampling at a
+matched budget) -- not informative for this experiment's claims, identical
+reasoning to Experiment 1's own REVISION. This also removed the only
+cross-algorithm tau dependency in the roster, so the dependency-ordering
+machinery (`DERIVED_VARIANTS`, `_reorder_bases_first`) that used to live
+here is gone too. Also dropped the old budget-truncated self-comparison
+rows entirely -- kabc-0.5x/kabc-sg-0.5x/acb-0.5x (each re-run at 0.5x its
+own realized tau) and unif-kkm-0.5x. kabc-sg and acb no longer have ANY
+variant row. In their place, `kabc-0.5x`/`kabc-2x` are REPURPOSED as an
+ablation over kabc's own calibrated threshold CONSTANT instead of its
+budget -- identical change and identical rationale to Experiment 1's own
+REVISION note; see scripts/common.py's `_kabc_fit_2x`/`_kabc_fit_0p5x`
+docstrings.
 
 `kabc-oracle` is GONE -- the old design's "price of adaptivity"
 (tau(kabc)/tau(kabc-oracle)) figure is dropped along with it. It was never
@@ -65,37 +67,22 @@ first place -- removing it isn't a loss of working signal.
 BUDGET_CAP: ONE value per grid point (`s_star_formula`, `constant=200`,
 s*^2 Monte-Carlo-estimated via `kabc.metrics.estimate_s_star_sq` -- see
 `scripts.common._resolve_budget_cap`'s own docstring), shared identically
-across all 8 algorithm rows and every rep at that grid point. This script
-always calls it with `budget_multiplier=1.0` (no `budget_multipliers`
-sweep dimension anymore -- the old restricted-budget pass, 1.0x/0.25x, is
-gone, replaced by the 0.5x self-comparison rows above, exactly like
-Experiment 1).
+across all 5 algorithm rows and every rep at that grid point. This script
+always calls it with `budget_multiplier=1.0`.
 
-GRID TRIM NOTE (2026-09-14): the grid was trimmed a second time, from 10
-points down to 6 fixed, illustrative settings (down from the old design's
-21, then 10). See docs/experiments.md's Experiment 2 GRID TRIM NOTE for the
-full rationale (mirrors notebooks/02_same_mean_shapes.ipynb's move away
-from per-family sweep plots to a fixed 6-setting bar-plot structure).
+GRID TRIM NOTE (2026-10-03): the grid was trimmed a third time, from 6
+settings down to exactly 3 -- one representative setting per family, due
+to space constraints in the paper (one illustrative example per family
+instead of two). Per-setting real wall-clock timing from the old
+6-setting/50-rep run (results/exp2/results.parquet) informed which of
+each family's two settings to keep. See docs/experiments.md's Experiment 2
+GRID TRIM NOTE (2026-10-03) for the full timing comparison.
 
-INSTANCE FAMILIES / GRID (6 points total, down from 10, down from the old
-design's 21):
-- scale_pair: sigma_B in {2, 3} -- 2 points. sigma_B=1.5 DROPPED in the
-  original redesign (least-separated, closest to A's own variance, by far
-  the slowest point in the old 4-value sweep); sigma_B=4 DROPPED in the
-  later GRID TRIM.
-- moment_matched_mixture: a in {0.85, 0.9} -- 2 points. The old design's
-  extended 0.25x-only range (a in {0.5,0.6,0.7}) was dropped in the
-  original redesign -- it existed purely to get ARI-at-cap signal at grid
-  points that hit the Gram-matrix memory guard even at full budget
-  (docs/experiments.md's "Known limitation" section); with the
-  restricted-budget pass gone entirely, that range no longer served the
-  purpose it was added for. a=0.8/a=0.95 DROPPED in the later GRID TRIM
-  (a=0.8 was also the single slowest point in the whole grid: acb alone
-  ran to tau~8M there without converging).
-- ring_blob: ring_radius in {2, 3} -- 2 points, up from a single fixed
-  ring_radius=2 config in the original redesign (a genuine sweep, matching
-  2a/2b's "one knob controls separation" shape). ring_radius=4 DROPPED in
-  the later GRID TRIM.
+INSTANCE FAMILIES / GRID (3 points total, one per family, down from 6):
+- scale_pair: sigma_B = 2 (kept; sigma_B=3 dropped).
+- moment_matched_mixture: a = 0.9 (kept; a=0.85 dropped -- it was also the
+  single most expensive setting in the whole grid, real-measured).
+- ring_blob: ring_radius = 2 (kept; ring_radius=3 dropped).
 
 SMOKE_TEST=1: reps capped, sweeps reduced to first/last value, instance
 size capped (`_smoke_shrink_kwargs` below -- all three families just need N
@@ -128,7 +115,6 @@ from joblib import Parallel, delayed
 # blocks in joblib's default 'loky' backend) -- see that module's docstring
 # for the full detail.
 from kabc import metrics
-from kabc.algorithms.baselines import fit as unif_kkm_fit
 from kabc.environments import MomentMatchedMixtureEnv, RingBlobEnv, ScalePairEnv
 from scripts.common import (
     SMOKE_TEST,
@@ -138,6 +124,8 @@ from scripts.common import (
     _apply_smoke_test,
     _expand_grid,
     _kabc_fit,
+    _kabc_fit_0p5x,
+    _kabc_fit_2x,
     _kabc_sg_fit,
     _resolve_budget_cap,
 )
@@ -153,47 +141,17 @@ ENVIRONMENTS = {
 # wide instance-param columns (NaN where inapplicable to a given family).
 ALL_INSTANCE_PARAMS = ["N", "sigma_B", "a", "ring_radius", "ring_noise"]
 
-BASE_FIT_FUNCTIONS = {
+FIT_FUNCTIONS = {
     "kabc": _kabc_fit,
+    "kabc-2x": _kabc_fit_2x,      # kabc with 2 * c_cal -- see scripts.common's docstring
+    "kabc-0.5x": _kabc_fit_0p5x,  # kabc with 0.5 * c_cal
     "kabc-sg": _kabc_sg_fit,
     "acb": _acb_fit,
 }
-# derived_id -> (base_id whose tau this scales, multiplier, fit function to call)
-DERIVED_VARIANTS = {
-    "unif-kkm-1x": ("kabc", 1.0, unif_kkm_fit),
-    "kabc-0.5x": ("kabc", 0.5, _kabc_fit),
-    "unif-kkm-0.5x": ("kabc", 0.5, unif_kkm_fit),
-    "kabc-sg-0.5x": ("kabc-sg", 0.5, _kabc_sg_fit),
-    "acb-0.5x": ("acb", 0.5, _acb_fit),
-}
-
-
-def _reorder_bases_first(algo_ids: list[str]) -> list[str]:
-    """Moves every base algorithm that has at least one derived dependent
-    present in `algo_ids` to the front (preserving relative order), so every
-    base resolves before ANY row that needs its tau -- regardless of the
-    config file's own ordering. Identical to run_experiment1.py's helper of
-    the same name (kept local, not shared, since it's a handful of lines
-    and both scripts' DERIVED_VARIANTS dicts are otherwise independent).
-    """
-    needed_bases = {DERIVED_VARIANTS[a][0] for a in algo_ids if a in DERIVED_VARIANTS}
-    bases_first = [a for a in algo_ids if a in needed_bases]
-    rest = [a for a in algo_ids if a not in needed_bases]
-    return bases_first + rest
-
-
-def _fit_one_algorithm(algo_id: str, env, delta: float, budget_cap: int, rng: np.random.Generator, tau_by_base: dict[str, float]):
-    if algo_id in DERIVED_VARIANTS:
-        base_id, multiplier, fit_fn = DERIVED_VARIANTS[algo_id]
-        if base_id not in tau_by_base:
-            raise RuntimeError(
-                f"{algo_id} requires {base_id!r}'s tau to already be known for this (grid point, rep) -- "
-                f"check algorithm ordering in configs/exp2.yaml"
-            )
-        this_budget = int(min(multiplier * tau_by_base[base_id], budget_cap))
-        return fit_fn(env, delta, this_budget, rng), this_budget
-    fit_fn = BASE_FIT_FUNCTIONS[algo_id]
-    return fit_fn(env, delta, budget_cap, rng), budget_cap
+# All 5 rows are independent -- no row's budget_cap or RNG depends on
+# another row's realized tau (unif-kkm, the one row that used to need
+# kabc's tau, was dropped 2026-10-03 -- not informative for this
+# experiment's claims, matching Experiment 1's identical change).
 
 
 def _process_one_rep(
@@ -205,17 +163,14 @@ def _process_one_rep(
     result rows (one per algorithm).
     """
     rep_seed = seed_multiplier * exp_id + rep
-    tau_by_base: dict[str, float] = {}
     rows = []
     for algo_idx, algo_id in enumerate(algo_ids):
         algo_seed = rep_seed * 100 + algo_idx
         rng = np.random.default_rng(algo_seed)
         t0 = time.time()
         with threadpoolctl.threadpool_limits(limits=1):
-            result, used_budget_cap = _fit_one_algorithm(algo_id, env, delta, budget_cap, rng, tau_by_base)
+            result = FIT_FUNCTIONS[algo_id](env, delta, budget_cap, rng)
         wall_clock_seconds = time.time() - t0
-        if algo_id in BASE_FIT_FUNCTIONS:
-            tau_by_base[algo_id] = result.tau
 
         print(f"    rep {rep} {row_context['label']}/{algo_id}: tau={result.tau} stopped={result.stopped} "
               f"time={wall_clock_seconds:.1f}s", flush=True)
@@ -228,7 +183,7 @@ def _process_one_rep(
             "algorithm": algo_id,
             "rep": rep,
             "seed": algo_seed,
-            "budget_cap": used_budget_cap,
+            "budget_cap": budget_cap,
             "s_star": row_context["s_star"],
             "tau": result.tau,
             "stopped": result.stopped,
@@ -290,7 +245,7 @@ def main() -> None:
     for family_cfg in config["instances"]:
         family = family_cfg["family"]
         env_cls = ENVIRONMENTS[family]
-        algo_ids = _reorder_bases_first(family_cfg["algorithms"])
+        algo_ids = family_cfg["algorithms"]
         if SMOKE_TEST:
             family_cfg = _apply_smoke_test(family_cfg)
 

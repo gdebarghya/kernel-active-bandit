@@ -1,67 +1,36 @@
 # Experiment 2 -- Identical means, different shapes: nonparametric
 # separation. See docs/experiments.md, "Experiment 2" section, for the full
-# design, including its REDESIGN NOTE (this config was rewritten from its
-# original form: `kabc-oracle` and the "price of adaptivity" claim/figure
-# are gone; the restricted-budget 1.0x/0.25x pass is gone, replaced by
-# per-algorithm 0.5x-of-its-own-tau self-comparison rows (originally 0.9x,
-# changed 2026-09-14 -- see MULTIPLIER NOTE below), mirroring
-# Experiment 1) and its GRID TRIM NOTE (2026-09-14): the grid was further
-# trimmed from 10 points down to exactly 6 -- scale_pair sigma_B in {2,3}
-# (dropped 4), moment_matched_mixture a in {0.85,0.9} (dropped 0.8,0.95),
-# ring_blob ring_radius in {2,3} (dropped 4) -- once
-# notebooks/02_same_mean_shapes.ipynb moved to a fixed 6-setting bar-plot
-# structure (mirroring Experiment 3's "3 versions" blocks) instead of
-# per-family sweep line plots: the variation within a family isn't the
-# interesting signal here, these 6 settings are meant as 6 distinct
-# illustrative examples, and a canonical grid computing 4 points that are
-# never plotted would be pure waste. `reps` raised from 20 to 50 to match
-# the actual production run this config now reproduces.
-# Consumed by scripts/run_experiment2.py -- a dedicated script, not the
-# (now-deleted) shared run_experiment.py engine -- see that script's module
-# docstring for why.
+# design. Consumed by scripts/run_experiment2.py -- a dedicated script, not
+# the (now-deleted) shared run_experiment.py engine -- see that script's
+# module docstring for why.
+#
+# `acb` rows can be regenerated alone (same instances, caps, seeds) with
+# scripts/run_experiment2_acb.py (`make exp2-acb`).
 
 exp_id: 2
 delta: 0.05
-reps: 50                       # COMPLETE (2026-09-15): full 50-rep run finished;
-                                # results/exp2/results.parquet has clean reps 0-49
-                                # for all 8 algorithms, verified.
-rep_start: 50                  # READY FOR A FUTURE EXTENSION: set to the CURRENT rep
-                                # count (50) so this config is a safe no-op as-is
-                                # (range(50, reps) is empty until `reps` above is
-                                # raised). RESUME/APPEND: raise `reps` above (e.g. to
-                                # 100) to append more reps to results/exp2/results.parquet
-                                # for all 8 algorithms uniformly -- see
-                                # scripts/run_experiment2.py's main() for the exact
-                                # mechanism (same pattern as configs/exp3.yaml).
+reps: 100
+rep_start: 0                   # 0 = fresh run (overwrites results/exp2); set to the current
+                                # rep count to append more reps.
 seed_multiplier: 1000
 seed_formula: "seed = seed_multiplier * exp_id + rep"
 
-n_jobs: 10                     # parallelize ACROSS REPS (not across the 8
+n_jobs: 10                     # parallelize ACROSS REPS (not across the 5
                                 # algorithm rows within one rep) -- see
                                 # scripts/run_experiment2.py's module
                                 # docstring for the full rationale.
 
-# 8 rows per (grid point, rep), IDENTICAL roster and dependency structure to
-# Experiment 1 -- three independent base algorithms (kabc, kabc-sg, acb),
-# each followed by its OWN 0.5x-of-its-own-tau self-comparison row, plus
-# unif-kkm-1x/unif-kkm-0.5x tied specifically to kabc's tau. See
-# scripts/run_experiment2.py's DERIVED_VARIANTS for the exact mapping.
-# kabc-oracle is GONE (see REDESIGN NOTE above) -- no config below lists it.
-# MULTIPLIER NOTE (2026-09-14): renamed from 0.9x to 0.5x -- KABC's
-# doubling-trick schedule quantizes its own realized tau to a small set of
-# round-boundary checkpoints, and the FINAL round alone typically costs
-# roughly half of the total realized tau, so a 0.9x cut cannot actually
-# test "10% less budget" -- it almost always lands in the same "one
-# checkpoint short" bucket as a much larger cut would. 0.5x is honest about
-# what is actually being tested: a meaningfully smaller, still-real budget
-# cut. See scripts/run_experiment2.py's module docstring for the full
-# evidence (direct per-rep inspection of kabc/kabc-0.9x rows).
+# 5 rows per (grid point, rep), all independent base algorithms (kabc,
+# kabc-2x, kabc-0.5x, kabc-sg, acb); no cross-algorithm tau dependency.
+# kabc-0.5x/kabc-2x are a calibration-constant ablation (c_cal halved/
+# doubled), not a budget variant -- see scripts/common.py's
+# `_kabc_fit_2x`/`_kabc_fit_0p5x` docstrings.
 ALGORITHMS: &algorithms
-  [kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x, kabc-sg, kabc-sg-0.5x, acb, acb-0.5x]
+  [kabc, kabc-2x, kabc-0.5x, kabc-sg, acb]
 
 # Shared budget_cap mechanism, identical to Experiment 1: one Monte-Carlo-
-# estimated s*^2 per grid point, shared across all 8 algorithm rows and
-# every rep at that point. No budget_multiplier anymore.
+# estimated s*^2 per grid point, shared across all 5 algorithm rows and
+# every rep at that point.
 BUDGET_CAP: &budget_cap
   type: s_star_formula
   constant: 200
@@ -69,39 +38,33 @@ BUDGET_CAP: &budget_cap
 
 instances:
   # (2a) Scale pair: cluster A = N(0,1), cluster B = N(0, sigma_B^2). Same
-  # mean, different variance. Only sigma_B in {2,3} kept (GRID TRIM NOTE
-  # above) -- sigma_B=1.5 was already dropped in the earlier REDESIGN
-  # (closest to A's own variance, slowest point in the old 4-value sweep);
-  # sigma_B=4 dropped in the later 10->6 trim, once these settings became 6
-  # fixed illustrative examples rather than a sweep.
+  # mean, different variance. One grid point per family (sigma_B=2).
   - family: scale_pair
     base: {N: 40}               # K=2 fixed internally by ScalePairEnv
     sweeps:
       - param: sigma_B
-        values: [2, 3]
+        values: [2]
     algorithms: *algorithms
     budget_cap: *budget_cap
 
   # (2b) Moment-matched mixture: cluster A = N(0,1), cluster B =
   # 0.5*N(-a,b^2) + 0.5*N(a,b^2), b^2 = 1-a^2 (matches mean AND variance;
-  # only shape differs). Only a in {0.85,0.9} kept (GRID TRIM NOTE above) --
-  # a=0.8/0.95 dropped in the 10->6 trim (a=0.8 was the slowest point in the
-  # whole grid: acb alone runs to tau~8M there without converging).
+  # only shape differs). One grid point (a=0.9).
   - family: moment_matched_mixture
     base: {N: 40}               # K=2 fixed internally
     sweeps:
       - param: a
-        values: [0.85, 0.9]
+        values: [0.9]
     algorithms: *algorithms
     budget_cap: *budget_cap
 
   # (2c) 2D geometry: ring (Gaussian noise 0.1, radius swept) vs N(0,I_2)
-  # blob, both centered at origin. Only ring_radius in {2,3} kept (GRID TRIM
-  # NOTE above) -- ring_radius=4 dropped in the 10->6 trim.
+  # blob, both centered at origin. One grid
+  # point (ring_radius=2).
   - family: ring_blob
     base: {N: 40, ring_noise: 0.1}   # K=2 fixed internally
     sweeps:
       - param: ring_radius
-        values: [2, 3]
+        values: [2]
     algorithms: *algorithms
     budget_cap: *budget_cap

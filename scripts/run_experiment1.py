@@ -1,45 +1,64 @@
 """CLI: python -m scripts.run_experiment1 [configs/exp1.yaml]
 
 Runs Experiment 1 (docs/experiments.md, "Experiment 1" section): the
-Gaussian-mixture Delta/d/N sweeps (13 grid points, one knob at a time),
-8 algorithm rows per (grid point, rep). Saves results/exp1/results.parquet.
+Gaussian-mixture Delta/d/N sweeps (12 grid points, one knob at a time),
+6 algorithm rows per (grid point, rep). Saves results/exp1/results.parquet.
 
 REDESIGN NOTE: this experiment used to run through `run_experiment.py`'s
 shared grid engine (build one environment per grid point, then a single
 flat `Parallel` call over every (algorithm, rep) work item). It moved to
-this dedicated script once the algorithm roster below grew real cross-
-algorithm dependencies within a (grid point, rep) -- several rows need
-another row's own realized tau before they can run -- which doesn't fit a
-flat, order-independent work-item list. Experiment 2 later gained the
-identical 8-algorithm/dependency structure and moved to its own dedicated
-script for the same reason, at which point `run_experiment.py` had zero
-remaining users and was deleted outright. The pieces every dedicated script
-still needs (calibrated-fit wrappers, grid expansion, budget_cap
-resolution) now live in `scripts/common.py` -- see that module's docstring.
+this dedicated script once an earlier algorithm roster grew real cross-
+algorithm dependencies within a (grid point, rep) -- some rows needed
+another row's own realized tau before they could run -- which doesn't fit
+a flat, order-independent work-item list. Experiment 2 gained the
+identical structure and moved to its own dedicated script for the same
+reason, at which point `run_experiment.py` had zero remaining users and
+was deleted outright. The pieces every dedicated script still needs
+(calibrated-fit wrappers, grid expansion, budget_cap resolution) now live
+in `scripts/common.py` -- see that module's docstring. The dependency that
+originally justified a dedicated script (unif-kkm needing kabc's tau) was
+itself removed on 2026-10-03 (see ALGORITHM ROSTER below) -- this script
+stayed dedicated anyway rather than reverting to a shared engine that no
+longer exists.
 
 PARALLELIZATION: reps are the parallelization unit (mirroring
-scripts/run_experiment3.py's design), NOT the 8 algorithm rows within one
+scripts/run_experiment3.py's design), NOT the 6 algorithm rows within one
 rep. `rep_indices` (per grid point) are chunked into `n_jobs`-sized batches;
 each batch runs one blocking `Parallel(n_jobs=n_jobs)` call over
-`_process_one_rep`. INSIDE one call, all 8 algorithm rows run SEQUENTIALLY
-in a single worker process -- required by the tau-dependency chains below,
-and (as a side benefit, same as Experiment 3) resolves those dependencies
-for free with no separate ordering phase. Unlike Experiment 3, the
-ENVIRONMENT is built ONCE PER GRID POINT, not once per rep:
-`GaussianMixtureEnv`'s cluster means are a deterministic closed-form
-function of `(N,K,d,Delta,sigma)` (no randomness at all), so every rep at a
-given grid point faces the exact identical instance -- only each
-algorithm's own pull-noise rng substream differs by rep.
+`_process_one_rep`. INSIDE one call, all 6 algorithm rows run sequentially
+in a single worker process (no longer a correctness requirement -- see
+ALGORITHM ROSTER below -- just the simplest way to share one built `env`
+and avoid a second level of nested parallelism). The ENVIRONMENT is built
+ONCE PER GRID POINT, not once per rep: `GaussianMixtureEnv`'s cluster means
+are a deterministic closed-form function of `(N,K,d,Delta,sigma)` (no
+randomness at all), so every rep at a given grid point faces the exact
+identical instance -- only each algorithm's own pull-noise rng substream
+differs by rep.
 SANDBOX: importing scripts.common forces joblib's 'multiprocessing' backend
 process-wide -- see that module's docstring for the full detail.
 
-ALGORITHM ROSTER (9 rows): kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x,
-kabc-sg, kabc-sg-0.5x, acb, acb-0.5x, acb-gaussian. Three independent BASE
-algorithms (kabc, kabc-sg, acb) are each run once at the grid point's full
-`budget_cap`; each is then, separately, re-run at `budget_cap =
-min(0.5 * its_own_tau, budget_cap)`, with a fresh independent RNG
-substream (not the base run's exact same pulls truncated early) -- testing
-how conservative THAT algorithm's own stopping rule is, per rep.
+ALGORITHM ROSTER (6 rows): kabc, kabc-2x, kabc-0.5x, kabc-sg, acb,
+acb-gaussian -- all independent (no row's budget_cap or RNG depends on
+another row's realized tau), each run once at the grid point's full
+`budget_cap`, own RNG substream.
+
+REVISION (2026-10-03): dropped `unif-kkm` entirely (it was tied to kabc's
+own realized tau, testing active/adaptive vs. naive uniform sampling at a
+matched budget) -- not informative for this experiment's claims, per
+direct review of its results. This also removed the only cross-algorithm
+tau dependency in the roster, so the dependency-ordering machinery
+(`DERIVED_VARIANTS`, `_reorder_bases_first`) that used to live here is
+gone too -- every row is now independent. Also dropped the old
+budget-truncated self-comparison rows entirely -- kabc-0.5x/kabc-sg-0.5x/
+acb-0.5x (each re-run at 0.5x its own realized tau) and unif-kkm-0.5x.
+kabc-sg and acb no longer have ANY variant row. In their place,
+`kabc-0.5x`/`kabc-2x` are REPURPOSED as an ablation over kabc's own
+calibrated threshold CONSTANT instead of its budget: `kabc-2x` doubles
+c_cal (more conservative threshold), `kabc-0.5x` halves it (less
+conservative) -- see scripts/common.py's `_kabc_fit_2x`/`_kabc_fit_0p5x`
+docstrings. Both are independent base rows at the grid point's full
+`budget_cap`, NOT tied to kabc's own realized tau the way the name
+`kabc-0.5x` previously implied.
 
 ACB-GAUSSIAN (added 2026-09-15, `kabc.algorithms.acb_gaussian`): the
 Gaussian-specialized, non-adaptive ACB variant from the ACB paper's own
@@ -47,11 +66,11 @@ Appendix A (arXiv:2406.11485) -- the variant its own authors used for their
 Figure 1 experiment, distinct from `acb` (the main-text adaptive ACB* this
 script also runs). Experiment 1 ONLY (its formulas require a
 GaussianMixtureEnv; it hard-fails on anything else -- see
-acb_gaussian.py's `_require_gaussian_env`), wired here as a NINTH,
-independent base row with NO `-0.5x` self-comparison counterpart -- unlike
-kabc/kabc-sg/acb, it has no calibrated-constant slack for a `-0.5x` row to
-meaningfully measure (see acb_gaussian.py's own "NO -0.5x SELF-COMPARISON
-ROW" note for why this isn't an oversight) -- and NO calibrated constant (see
+acb_gaussian.py's `_require_gaussian_env`), wired here as an independent
+base row with no constant/budget-variant counterpart of its own -- it has
+no calibrated-constant slack for a variant row to meaningfully measure
+(see acb_gaussian.py's own "NO -0.5x SELF-COMPARISON ROW" note for why
+this isn't an oversight) -- and NO calibrated constant (see
 `kabc.algorithms.acb_gaussian`'s CALIBRATION note and
 `configs/calibration.yaml`'s own note for this algorithm) -- called
 directly via `acb_gaussian.fit`, not through a `scripts.common`
@@ -63,39 +82,23 @@ legitimate, explicitly-flagged non-oracle-cheat comparison specific to this
 experiment, and docs/results_exp1_exp2_exp3.tex's Baselines section for the
 paper-facing statement of the same.
 
-MULTIPLIER CHANGED from an earlier 0.9x to 0.5x (2026-09-14), after directly
+HISTORY (prior to the 2026-10-03 REVISION above): budget-truncated
+self-comparison rows (each base algorithm re-run at a multiplier of its own
+realized tau) used to exist for kabc/kabc-sg/acb, and unif-kkm used to come
+in `-1x`/`-0.5x` tiers tied to kabc's tau. The multiplier for those rows was
+changed from an earlier 0.9x to 0.5x on 2026-09-14, after directly
 inspecting per-rep kabc/kabc-0.9x rows: KABC's doubling-trick schedule
 quantizes its own realized tau to a small set of round-boundary checkpoints,
 and the FINAL round alone typically costs roughly half of the total realized
-tau. A 0.9x budget cut therefore almost always lands short of that final
-round regardless of how close to 1.0 the multiplier nominally is -- there is
-no way to construct a real "kabc re-run with 10% less budget" against this
-schedule; 0.9x and, say, 0.6x test essentially the same thing (does the
-PREVIOUS round's partition already resolve correctly), not a fine-grained
-margin. 0.5x makes what is actually being tested explicit -- a meaningfully
-smaller, still-real budget cut -- rather than implying false precision the
-doubling schedule cannot honor.
-
-This replaces the OLD design's separate restricted-budget pass
-(`budget_multiplier=0.25`, applied uniformly to every algorithm's shared
-budget_cap): that asked "how does a globally-smaller budget degrade every
-method," this asks the more specific "how much of THIS method's own
-realized budget was margin beyond what a correct answer needed." unif-kkm
-is no longer swept over its own independent n-grid (the old design) --
-instead, `unif-kkm-1x`/`unif-kkm-0.5x` use `kabc`'s tau specifically (not
-kabc-sg's or acb's), at 1.0x/0.5x, testing whether active/adaptive
-selection beats naive uniform sampling at a matched budget. See
-DERIVED_VARIANTS below for the exact (base algorithm, multiplier, fit
-function) mapping, and `_reorder_bases_first` for how the three
-independent dependency chains (kabc -> {unif-kkm-1x, kabc-0.5x,
-unif-kkm-0.5x}; kabc-sg -> kabc-sg-0.5x; acb -> acb-0.5x) are resolved
-regardless of the config file's own algorithm ordering.
+tau, so a 0.9x cut almost always landed short of that final round regardless
+of how close to 1.0 the multiplier nominally was. That entire mechanism, and
+unif-kkm itself, are now GONE, per the REVISION above.
 
 BUDGET_CAP: ONE value per grid point (`s_star_formula`, `constant=200`,
 s*^2 Monte-Carlo-estimated via `kabc.metrics.estimate_s_star_sq` -- see
 `scripts.common._resolve_budget_cap`'s own docstring; NOT a literal
 closed-form s*^2, though the formula itself is the paper's exact proven
-bound, Theorem 3.1), shared identically across all 8 algorithm rows and
+bound, Theorem 3.1), shared identically across all 6 algorithm rows and
 every rep at that grid point. This script always calls it with
 `budget_multiplier=1.0` (no `budget_multipliers` sweep dimension anymore,
 since the restricted-budget concept it existed for is gone -- see
@@ -134,7 +137,6 @@ from joblib import Parallel, delayed
 # for the full detail.
 from kabc import metrics
 from kabc.algorithms import acb_gaussian
-from kabc.algorithms.baselines import fit as unif_kkm_fit
 from kabc.environments import GaussianMixtureEnv
 from scripts.common import (
     SMOKE_TEST,
@@ -144,56 +146,27 @@ from scripts.common import (
     _apply_smoke_test,
     _expand_grid,
     _kabc_fit,
+    _kabc_fit_0p5x,
+    _kabc_fit_2x,
     _kabc_sg_fit,
     _resolve_budget_cap,
 )
 
 SMOKE_TEST_MAX_N = 12  # even, and divisible by K in {2,3,4} -- gaussian_mixture-specific, stays local
 
-BASE_FIT_FUNCTIONS = {
+FIT_FUNCTIONS = {
     "kabc": _kabc_fit,
+    "kabc-2x": _kabc_fit_2x,      # kabc with 2 * c_cal -- see scripts.common's docstring
+    "kabc-0.5x": _kabc_fit_0p5x,  # kabc with 0.5 * c_cal
     "kabc-sg": _kabc_sg_fit,
     "acb": _acb_fit,
     "acb-gaussian": acb_gaussian.fit,  # no calibration wrapper -- see module docstring's ACB-GAUSSIAN note
 }
-# derived_id -> (base_id whose tau this scales, multiplier, fit function to call)
-DERIVED_VARIANTS = {
-    "unif-kkm-1x": ("kabc", 1.0, unif_kkm_fit),
-    "kabc-0.5x": ("kabc", 0.5, _kabc_fit),
-    "unif-kkm-0.5x": ("kabc", 0.5, unif_kkm_fit),
-    "kabc-sg-0.5x": ("kabc-sg", 0.5, _kabc_sg_fit),
-    "acb-0.5x": ("acb", 0.5, _acb_fit),
-}
-
-
-def _reorder_bases_first(algo_ids: list[str]) -> list[str]:
-    """Moves every base algorithm that has at least one derived dependent
-    present in `algo_ids` to the front (preserving relative order), so every
-    base resolves before ANY row that needs its tau -- regardless of the
-    config file's own ordering. Simpler than an exact topological
-    interleave (which would preserve more of the original ordering) since
-    there are only 3 independent chains here and their relative order
-    doesn't matter for correctness, only that each base precedes its own
-    dependents.
-    """
-    needed_bases = {DERIVED_VARIANTS[a][0] for a in algo_ids if a in DERIVED_VARIANTS}
-    bases_first = [a for a in algo_ids if a in needed_bases]
-    rest = [a for a in algo_ids if a not in needed_bases]
-    return bases_first + rest
-
-
-def _fit_one_algorithm(algo_id: str, env, delta: float, budget_cap: int, rng: np.random.Generator, tau_by_base: dict[str, float]):
-    if algo_id in DERIVED_VARIANTS:
-        base_id, multiplier, fit_fn = DERIVED_VARIANTS[algo_id]
-        if base_id not in tau_by_base:
-            raise RuntimeError(
-                f"{algo_id} requires {base_id!r}'s tau to already be known for this (grid point, rep) -- "
-                f"check algorithm ordering in configs/exp1.yaml"
-            )
-        this_budget = int(min(multiplier * tau_by_base[base_id], budget_cap))
-        return fit_fn(env, delta, this_budget, rng), this_budget
-    fit_fn = BASE_FIT_FUNCTIONS[algo_id]
-    return fit_fn(env, delta, budget_cap, rng), budget_cap
+# All 6 rows are independent -- no row's budget_cap or RNG depends on
+# another row's realized tau (unif-kkm, the one row that used to need
+# kabc's tau, was dropped 2026-10-03 -- not informative for this
+# experiment's claims). So no dependency-ordering/tau-tracking machinery
+# is needed here at all, unlike the pre-2026-10-03 design.
 
 
 def _process_one_rep(
@@ -202,20 +175,20 @@ def _process_one_rep(
 ) -> list[dict]:
     """Runs every algorithm row for ONE rep against the grid point's SHARED,
     already-built `env`, sequentially, entirely in-memory. Returns a list of
-    result rows (one per algorithm).
+    result rows (one per algorithm). Sequential execution is no longer a
+    correctness requirement (no row depends on another's tau) -- kept for
+    simplicity, since the per-worker cost is dominated by the slowest
+    single algorithm (kabc-sg) regardless of ordering.
     """
     rep_seed = seed_multiplier * exp_id + rep
-    tau_by_base: dict[str, float] = {}
     rows = []
     for algo_idx, algo_id in enumerate(algo_ids):
         algo_seed = rep_seed * 100 + algo_idx
         rng = np.random.default_rng(algo_seed)
         t0 = time.time()
         with threadpoolctl.threadpool_limits(limits=1):
-            result, used_budget_cap = _fit_one_algorithm(algo_id, env, delta, budget_cap, rng, tau_by_base)
+            result = FIT_FUNCTIONS[algo_id](env, delta, budget_cap, rng)
         wall_clock_seconds = time.time() - t0
-        if algo_id in BASE_FIT_FUNCTIONS:
-            tau_by_base[algo_id] = result.tau
 
         print(f"    rep {rep} {row_context['label']}/{algo_id}: tau={result.tau} stopped={result.stopped} "
               f"time={wall_clock_seconds:.1f}s", flush=True)
@@ -228,7 +201,7 @@ def _process_one_rep(
             "algorithm": algo_id,
             "rep": rep,
             "seed": algo_seed,
-            "budget_cap": used_budget_cap,
+            "budget_cap": budget_cap,
             "s_star": row_context["s_star"],
             "tau": result.tau,
             "stopped": result.stopped,
@@ -282,7 +255,7 @@ def main() -> None:
     family = family_cfg["family"]
     if family != "gaussian_mixture":
         raise ValueError(f"scripts.run_experiment1 only supports the gaussian_mixture family, got {family!r}")
-    algo_ids = _reorder_bases_first(family_cfg["algorithms"])
+    algo_ids = family_cfg["algorithms"]
     if SMOKE_TEST:
         family_cfg = _apply_smoke_test(family_cfg)
         print(f"SMOKE_TEST=1: reps capped at {SMOKE_TEST_MAX_REPS}, sweeps reduced to endpoints, "

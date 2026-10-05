@@ -10,6 +10,13 @@ including a dedicated experiment (Experiment 4) testing whether KABC's
 decision rule holds up better than kernel k-means under real, resampled
 cluster-size imbalance.
 
+| Experiment | Setting | Algorithms |
+|---|---|---|
+| 1 | Gaussian mixtures (sweeps over Δ, d, N) | kabc (+2x/0.5x calibration ablation, sg), acb, acb-gaussian |
+| 2 | Same-mean, different-shape pairs | kabc (+2x/0.5x, sg), acb |
+| 3 | MovieLens random movie pairs (N=8, K=2) | kabc, acb, tas-fw, unif-kkm |
+| 4 | MovieLens prototypes with cluster-size imbalance (K=7, 12) | kabc, unif-kkm, acb |
+
 Full experimental design, algorithm details, and figure specs: see
 [`docs/experiments.md`](docs/experiments.md).
 
@@ -41,23 +48,38 @@ make smoke-exp4      # separate, slower sanity run for experiment 4 (real k=8 pa
 make exp1            # Experiment 1: Gaussian mixtures
 make exp2            # Experiment 2: same-mean, different-shape instances
 make exp3            # Experiment 3: MovieLens random pairs
-make exp4            # Experiment 4: MovieLens prototypes, kabc vs. unif-kkm under imbalance
+make exp4            # Experiment 4: MovieLens prototypes, kabc vs. unif-kkm (and acb) under imbalance
+make exp2-acb        # ACB-only rerun on Experiment 2's existing instances (replaces the acb rows)
+make exp4-acb        # ACB-only pass on Experiment 4's existing instances (adds the acb rows)
 make test            # run test suite
 ```
 
-Notebooks in `notebooks/` load results from `results/*.parquet` and produce
-paper figures — run the corresponding `make expN` first.
+`make exp4` takes many hours (kabc's doubling rounds at k=8 dominate); the others take minutes
+to roughly an hour on a laptop. `make exp2-acb` / `make exp4-acb` expect the corresponding main
+run to exist already and back up the results file before merging.
+
+Notebooks in `notebooks/` load results from `results/*/results.parquet` and produce
+paper figures (written to `results/figures/`) — run the corresponding `make expN` first:
+
+| Notebook | Experiments | Figures |
+|---|---|---|
+| `01_gaussian_mixtures.ipynb` | 1 | `exp1_main`, `exp1_ablation` |
+| `02_same_mean_shapes.ipynb` | 2 | `exp2_compact_row`, `exp2_ablation_row` |
+| `03_movielens_combined.ipynb` | 3 and 4 | `exp3_exp4_combined_row` |
 
 ## Repository structure
 
-configs/      experiment grids, seeds, calibrated constants
-data/         MovieLens-1M (gitignored)
-docs/         experimental design doc
-notebooks/    one notebook per experiment, figures only
-results/      parquet outputs (gitignored)
-scripts/      data download, calibration, experiment runner
-src/kabc/     algorithms, kernels, thresholds, environments, metrics
+```
+configs/      experiment grids, seeds, calibrated constants (exp1-4.yaml, calibration*.yaml)
+data/         MovieLens-1M and the 207-movie pool (gitignored)
+docs/         experimental design doc (experiments.md)
+notebooks/    figure notebooks (load results only, never recompute)
+results/      parquet outputs and figures (gitignored)
+scripts/      data download, calibration, per-experiment runners (run_experimentN.py),
+              ACB-only passes (run_experiment2_acb.py, run_experiment4_acb.py)
+src/kabc/     algorithms, kernels, thresholds, environments, metrics, plotting style
 tests/        pytest suite
+```
 
 ## Citation
 

@@ -134,8 +134,7 @@ TRAJECTORIES_PATH = OUTPUT_DIR / "trajectories.pkl"
 # Own, separate file -- NOT configs/calibration.yaml (kabc/kabc-sg/acb's
 # frozen constants, untouched by this script) -- keeps this calibration's
 # code, protocol, and output fully independent of the existing calibration
-# infrastructure, same "kept separate" principle as
-# scripts/run_experiment3_tasfw_lowbudget.py's own results file.
+# infrastructure.
 CALIBRATED_CONST_PATH = Path("configs/calibration_tas_fw.yaml")
 
 

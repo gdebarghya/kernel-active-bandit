@@ -1,108 +1,44 @@
 # Experiment 3 -- MovieLens random pairs: robustness across the real-data
 # pair distribution. See docs/experiments.md, "Experiment 3" section for the
-# full design, including its REVISION HISTORY (this experiment was originally
-# built and run as "Experiment 4"; the old, fixed-instance "Experiment 3" --
-# one cherry-picked K=4 prototype set, plus a small N=6 reduced instance for
-# tas-fw -- was dropped entirely and this took its number, since the whole
-# point of keeping MovieLens in the benchmark is testing against tas-fw on
-# real data, which this random-pair design already does more robustly than
-# the old fixed instance did). This config is consumed by
-# scripts/run_experiment3.py -- a separate dedicated script, not
-# run_experiment.py -- because every rep rebuilds a FRESH environment (a new
-# randomly-sampled movie pair), which doesn't fit the shared grid engine's
-# per-grid-point-env-reuse loop.
+# full design. Consumed by scripts/run_experiment3.py -- a dedicated script
+# because every rep rebuilds a FRESH environment (a newly sampled movie
+# pair), which doesn't fit a per-grid-point-env-reuse loop.
 
 exp_id: 3
 delta: 0.05
-reps: 50                       # COMPLETE (2026-09-15): full 50-rep run finished;
-                                # results/exp3_*/results.parquet have clean reps
-                                # 0-49 for all 6 algorithms x 3 versions, verified.
-rep_start: 50                  # READY FOR A FUTURE EXTENSION: set to the CURRENT rep
-                                # count (50) so this config is a safe no-op as-is
-                                # (range(50, reps) is empty until `reps` above is
-                                # raised). RESUME/APPEND: raise `reps` above (e.g. to
-                                # 100) to append more reps to results/exp3_*/results.parquet
-                                # for all 6 algorithms x 3 versions uniformly -- see
-                                # scripts/run_experiment3.py's main() for the exact
-                                # mechanism.
+reps: 100
+rep_start: 0                  # 0 = fresh run (overwrites results/exp3_3); set to the current
+                                # rep count to append more reps.
 seed_multiplier: 1000
 seed_formula: "seed = seed_multiplier * exp_id + rep"
 
 data_dir: data/ml-1m-207      # scripts/build_movielens_207.py's output
 arms_per_prototype: 4          # N = 2 * arms_per_prototype = 8, K = 2 fixed
-budget_cap: 15000              # fixed, not s_star_formula -- a formula-derived
-                                # cap isn't meaningful at this scale. Deliberately
-                                # NOT raised to clear kabc's doubling-trick round-7
-                                # threshold (28560 at N=8, delta=0.05): kabc's own
-                                # non-convergent cutoff (tau=13832) is IDENTICAL
-                                # for any budget_cap in [13832, 28559], so this
-                                # choice doesn't change kabc's behavior at all
-                                # relative to a larger cap -- it specifically
-                                # limits how much budget acb/tas-fw get without
-                                # touching kabc's own reported numbers. See
-                                # docs/experiments.md's REVISION 4 note.
+budget_cap: 30000              # fixed, not s_star_formula, and common to ALL algorithms.
+                                # 30000 clears kabc's doubling-trick round-7 threshold
+                                # (28560 at N=8, delta=0.05); an earlier cap of 15000
+                                # did not (results kept as results_cap15000_backup.parquet).
 
 n_jobs: 10                     # parallelize ACROSS REPS (not across the
                                 # algorithm-rows within one rep) -- see
-                                # docs/experiments.md Experiment 3
-                                # "Parallelization" for the full rationale.
+                                # docs/experiments.md section 0.4.
 
-# 6 algorithm rows per (rep, version). kabc-sg and unif-kkm-2x DROPPED (see
-# docs/experiments.md's REVISION 4): kabc-sg's fragility/confident-wrong-
-# answer failure mode is already thoroughly documented on this exact real-
-# data setting from the prior run, and unif-kkm-2x never showed much beyond
-# what -1x already showed. Two NEW rows added instead, both testing how
-# conservative kabc's stopping rule is: kabc-0.5x (kabc re-run at
-# budget_cap = min(0.5 * tau_kabc, budget_cap), independent fresh RNG --
-# seed reuse against the primary kabc run was considered and deliberately
-# NOT done, since results are averaged over reps anyway) and unif-kkm-0.5x
-# (same 0.5x-of-tau_kabc budget, for the non-adaptive baseline). kabc must
-# run before ANY of kabc-0.5x/unif-kkm-1x/unif-kkm-0.5x, all three of
-# which need tau_kabc -- enforced in scripts/run_experiment3.py regardless
-# of this list's order.
-# MULTIPLIER NOTE (2026-09-14): renamed from 0.9x to 0.5x -- KABC's
-# doubling-trick schedule quantizes its own realized tau to a small set of
-# round-boundary checkpoints, and the FINAL round alone typically costs
-# roughly half of the total realized tau, so a 0.9x cut cannot actually
-# test "10% less budget" -- it almost always lands in the same "one
-# checkpoint short" bucket as a much larger cut would. See
-# scripts/run_experiment3.py's module docstring for the full evidence.
-algorithms: [kabc, kabc-0.5x, acb, tas-fw, unif-kkm-1x, unif-kkm-0.5x]
+# 4 algorithm rows per (rep, version): kabc, acb, tas-fw, unif-kkm.
+# tas-fw uses its own separately calibrated constant
+# (configs/calibration_tas_fw.yaml, written by scripts/calibrate_tas_fw.py).
+# unif-kkm is the only row with a cross-algorithm tau dependency (its budget is
+# min(tau_kabc, budget_cap)), so kabc runs before it regardless of this list's
+# order (enforced in scripts/run_experiment3.py).
+algorithms: [kabc, acb, tas-fw, unif-kkm]
 
-# One knob differs per version: how movie B is chosen relative to movie A
-# (see docs/experiments.md Experiment 3 "Version-specific B-selection
-# rules"). `rule: max_mmd` = deterministic argmax MMD^2 among eligible
-# candidates; `rule: uniform` = uniform-random choice among them.
-# `comparison` says how the gap bound(s) constrain |mean_A - mean_B|:
-# `le` = "<= mean_gap_tol" (same-mean-ish); `range` = "mean_gap_min <=
-# gap <= mean_gap_max" (bounded both sides).
-#
-# Movie A is drawn identically across all three versions for a given rep
-# (common random numbers) via a shared candidate-order permutation; each
-# version then picks the first candidate A (in that shared order) with at
-# least one eligible B under ITS OWN rule -- so versions only diverge on
-# movie A in the rare case where the shared draw's first choice has no
-# eligible partner under a stricter version's rule (see
-# scripts/run_experiment3.py).
-#
-# v1/v3 now share the SAME mean_gap_tol (0.25) -- v1 vs v3 is now a clean,
-# matched-tolerance ablation of max_mmd (cherry-picked shape difference) vs
-# uniform (no cherry-pick) B-selection, which the prior 0.1-vs-0.2 version
-# of this design explicitly could NOT do (see docs/experiments.md's earlier
-# revision history). v2's range raised to [0.25, 1.0] (from [0.1, 0.5]) to
-# give acb more real mean separation to work with, per the prior run's
-# finding that it was still weak even in the old moderate-gap range.
+# One version only (exp3_3): B is drawn uniformly among all movies whose mean
+# differs from A's by at most mean_gap_tol -- no MMD^2 cherry-picking and no
+# easy mean separation. `rule: uniform` = uniform-random choice among eligible
+# candidates; `comparison: le` = "|mean_A-mean_B| <= mean_gap_tol". The
+# shared-candidate-order machinery in scripts/run_experiment3.py supports
+# several versions per rep and still works with one.
 versions:
-  - name: exp3_1
-    rule: max_mmd
-    comparison: le
-    mean_gap_tol: 0.25
-  - name: exp3_2
-    rule: uniform
-    comparison: range
-    mean_gap_min: 0.25
-    mean_gap_max: 1.0
   - name: exp3_3
     rule: uniform
     comparison: le
-    mean_gap_tol: 0.25
+    mean_gap_tol: 1.0   # B drawn uniformly from all movies with |mean_A-mean_B| in [0, 1]

@@ -1,11 +1,15 @@
 """CLI: python -m scripts.run_experiment3 [configs/exp3.yaml]
 
-Runs Experiment 3 (docs/experiments.md, "Experiment 3" section): three
-versions (exp3_1/exp3_2/exp3_3) of a MovieLens random-pair robustness check.
-Saves THREE separate files, one per version -- results/exp3_1/results.parquet,
-results/exp3_2/results.parquet, results/exp3_3/results.parquet -- so
-notebooks/03's plotting code can load and process one version at a time with
-the same logic.
+Runs Experiment 3 (docs/experiments.md, "Experiment 3" section): a
+MovieLens random-pair robustness check. Saves one results file per
+version listed in configs/exp3.yaml's `versions` -- currently just one,
+`exp3_3` (results/exp3_3/results.parquet) -- the script itself still
+supports multiple versions per run (loops over `config["versions"]`,
+writes one file per entry), unchanged from when it ran exp3_1/exp3_2/exp3_3
+together (VERSIONS TRIMMED, 2026-10-03: down to exp3_3 only, a paper-space
+constraint -- see configs/exp3.yaml's own note for why exp3_3 specifically
+was kept). notebooks/03's plotting code loads and processes one version at
+a time with the same logic regardless of how many are configured.
 
 RENUMBERING NOTE: this experiment was originally built and run as
 "Experiment 4" (MovieLens random pairs), alongside a separate, older
@@ -15,7 +19,7 @@ DROPPED ENTIRELY -- the whole point of keeping MovieLens in this benchmark is
 testing against tas-fw on real data, which this random-pair design already
 does, more robustly (averaged over many sampled pairs rather than one
 cherry-picked instance) than the old fixed instance did. This script took the
-"3" slot. See docs/experiments.md's REVISION 4 note for the full rationale.
+"3" slot.
 
 WHY A SEPARATE SCRIPT: every experiment 1-2 grid point builds ONE
 environment, reused across all its reps (only pull-noise varies by rep).
@@ -28,20 +32,20 @@ on the exact same frozen configs/calibration.yaml constants as Experiments
 1-2, per the "calibrate once, reuse everywhere" protocol (section 0.2) --
 not a re-implementation.
 
-PARALLELIZATION: across REPS, not across the 6 (algorithm) rows within one
+PARALLELIZATION: across REPS, not across the 4 (algorithm) rows within one
 rep. `rep_indices` are chunked into `n_jobs`-sized batches; each batch runs
 one blocking `Parallel(n_jobs=n_jobs)` call over `_process_one_rep`, so every
 batch's reps run truly concurrently across `n_jobs` worker processes. INSIDE
-one call, all 3 versions and all 6 algorithm rows per version run
-SEQUENTIALLY in a single worker process. Two reasons this beats
-parallelizing the 18 (version, algorithm) items within one rep: (1) it
-resolves the kabc-derived-variant budget dependency below for free -- running
-kabc before its derived rows in the same worker just means calling it first,
-no separate dependency-ordering phase needed; (2) better load balancing
-within a batch -- tas-fw-heavy vs. cheap reps land across workers by chance,
-rather than every single rep's wall-clock being gated by its slowest
-algorithm. Progress/incremental writes happen once per BATCH (not per single
-rep as it completes) -- see the SANDBOX note below for why.
+one call, all configured versions (currently 1) and all 4 algorithm rows
+per version run SEQUENTIALLY in a single worker process. Two reasons this
+beats parallelizing the (version, algorithm) items within one rep: (1) it
+resolves `unif-kkm`'s budget dependency on kabc's own tau for free -- running
+kabc before it in the same worker just means calling it first, no separate
+dependency-ordering phase needed; (2) better load balancing within a batch
+-- tas-fw-heavy vs. cheap reps land across workers by chance, rather than
+every single rep's wall-clock being gated by its slowest algorithm.
+Progress/incremental writes happen once per BATCH (not per single rep as it
+completes) -- see the SANDBOX note below for why.
 WRITER SAFETY: workers never touch the filesystem -- `_process_one_rep`
 computes entirely in-memory and returns that rep's rows; only the MAIN
 process (after each batch) calls `to_parquet(...)`, always sequentially, one
@@ -60,49 +64,59 @@ constraint: still real multi-process parallelism, still periodic progress
 printing and incremental parquet writes (crash-resume safety preserved),
 just at batch granularity instead of single-rep-as-it-completes granularity.
 
-ALGORITHM ROSTER (6 rows per (rep, version)): kabc, kabc-0.5x, acb, tas-fw,
-unif-kkm-1x, unif-kkm-0.5x. `kabc-sg` and `unif-kkm-2x` (both present in
-this experiment's original "Experiment 4" run) are DROPPED: kabc-sg's
-fragility / confident-wrong-answer failure mode is already thoroughly
-documented on this exact real-data setting from that prior run, and
-unif-kkm-2x never showed much beyond what -1x already showed. See
-docs/experiments.md's REVISION 4 note.
+ALGORITHM ROSTER (4 rows per (rep, version), REVISION 2026-10-03): kabc,
+acb, tas-fw, unif-kkm. Replaces the prior 6-row roster (kabc, kabc-0.5x,
+acb, tas-fw, unif-kkm-1x, unif-kkm-0.5x) with two changes:
 
-KABC-0.5X VARIANT (renamed from kabc-0.9x, 2026-09-14): a second,
-independent `kabc` run per (rep, version), at `budget_cap = min(0.5 *
-tau_kabc, budget_cap)` where `tau_kabc` is that SAME (rep, version)'s
-primary `kabc` row's own realized tau. This asks: how conservative is
-kabc's stopping rule -- what does its partition estimate look like with a
-meaningfully smaller budget than it actually decided it needed? Uses a
-FRESH, independent RNG substream (its own `algo_seed`, same convention as
-every other algorithm row), not the primary kabc run's exact same pulls
-truncated early -- deliberately: reusing the same seed was considered, but
-decided against, since results here are averaged over many reps anyway, so
-an independent draw at the reduced budget is simpler and equally
-informative in aggregate. `kabc` must therefore run before `kabc-0.5x` for
-a given (rep, version) -- same ordering requirement as the unif-kkm
-variants below, and enforced the same way.
+1. **`acb` UNCHANGED -- kept.** Considered for removal as a poor baseline
+   on this setting, but it's also consistently cheap here (sub-second/rep,
+   real-measured across all three versions of the prior 3-version run),
+   so there was no compute reason to drop it either.
+2. **Uncalibrated `tas-fw` DROPPED; `tas-fw-calibrated` PROMOTED to the
+   canonical `tas-fw`.** The uncalibrated version almost always hit
+   `budget_cap` without stopping (despite good ARI on the partition it
+   DID find) -- see docs/experiments.md's Experiment 3 section.
+   The ad hoc follow-up `scripts/run_experiment3_tasfw_calibrated.py`
+   (now DELETED, its one row folded in here) showed a calibrated const
+   (`configs/calibration_tas_fw.yaml`, from `scripts/calibrate_tas_fw.py`'s
+   own offline protocol -- NOT `configs/calibration.yaml`'s kabc/kabc-sg/acb
+   constants) gets tas-fw to actually certify far more often on the SAME
+   real movie pairs, at the SAME production `budget_cap`. This script now
+   reads that calibrated const directly (`_load_tas_fw_const`) and reports
+   it AS `tas-fw` -- not a separate `-calibrated` suffix -- since the
+   uncalibrated version is no longer run at all; there is only one `tas-fw`
+   row now, and it is the calibrated one.
 
-MULTIPLIER CHANGED from an earlier 0.9x to 0.5x (2026-09-14) -- same
-reasoning as Experiments 1-2's dedicated scripts: KABC's doubling-trick
-schedule quantizes its own realized tau to a small set of round-boundary
-checkpoints, and the FINAL round alone typically costs roughly half of the
-total realized tau, so a 0.9x cut cannot actually test "10% less budget" --
-it almost always lands in the same "one checkpoint short" bucket as a much
-larger cut would. 0.5x is honest about what is actually being tested: a
-meaningfully smaller, still-real budget cut.
+NO CALIBRATION-CONSTANT ABLATION HERE (revised again, same day): an
+earlier pass added `kabc-2x`/`kabc-0.5x`/`tas-fw-2x`/`tas-fw-0.5x`
+(mirroring Experiments 1-2's constant ablation), but `tas-fw` is slow
+enough (its per-time-step Frank-Wolfe LP cost compounds with however many
+samples it ends up pulling before stopping) that running THREE tas-fw
+variants per rep wasn't worth it -- dropped entirely, not kept as an
+appendix-only row. `kabc-0.5x`/`kabc-2x` were dropped alongside it for
+consistency (no ablation at all here, rather than an asymmetric kabc-only
+one). `_kabc_fit_0p5x`/`_kabc_fit_2x` (from `scripts/common.py`) remain
+used by Experiments 1-2, just not here.
 
-UNIF-KKM VARIANTS (docs/experiments.md's "unif-kkm variants"): unif-kkm is
-non-adaptive and always spends whatever budget it's given
+UNIF-KKM (renamed from `unif-kkm-1x`; `unif-kkm-0.5x` DROPPED, mirroring
+Experiments 1-2): the only row left with a cross-algorithm tau dependency.
+unif-kkm is non-adaptive and always spends whatever budget it's given
 (`baselines.fit`'s docstring: n = budget_cap // N pulls/arm, always) --
 passing it a smaller budget_cap than the configured value is already the
 built-in mechanism for "give it fewer samples", no code change to
-baselines.py needed. unif-kkm-1x and unif-kkm-0.5x use that SAME (rep,
-version)'s kabc tau, at a 1.0x/0.5x multiple (capped at budget_cap) -- so
-kabc's row must be computed before either, for a given (rep, version).
-`main()` forces kabc first in the algorithm order regardless of the config
-file's own ordering (see its "kabc must resolve first" block below); this
-also covers kabc-0.5x, which has the identical dependency.
+baselines.py needed. `unif-kkm` uses that SAME (rep, version)'s kabc tau,
+at a 1.0x multiple (capped at budget_cap) -- so kabc's row must be
+computed first, for a given (rep, version). `main()` forces kabc first in
+the algorithm order regardless of the config file's own ordering (see its
+"kabc must resolve first" block below).
+
+VERSIONS TRIMMED (2026-10-03, configs/exp3.yaml): from 3 (exp3_1, exp3_2,
+exp3_3) down to exactly 1 (exp3_3 only) -- a paper-space constraint, not a
+code change. exp3_3 was kept as the hardest of the three (uniform
+B-selection; mean_gap_tol widened from 0.25 to 1.0 on 2026-10-03) where both kabc and the now-
+calibrated tas-fw still perform well. See that config's own note for the
+full rationale; this script's version-loop machinery is unchanged and
+still supports more than one version if one is added back later.
 
 SMOKE_TEST=1: reps capped at 5. Does not shrink N/K (already tiny: N=8) or
 the movie pool.
@@ -135,23 +149,51 @@ from joblib import Parallel, delayed
 # for the full detail.
 from kabc import metrics
 from kabc.algorithms.baselines import fit as unif_kkm_fit
-from kabc.algorithms.tas_fw import fit as tas_fw_fit
+from kabc.algorithms.tas_fw import _fit as _tas_fw_fit_internal
 from kabc.environments import MovieLensPairEnv, _movie_rating_distributions, _prototype_bandwidth, compute_pairwise_mmd2
 from scripts.common import SMOKE_TEST, SMOKE_TEST_MAX_REPS, _acb_fit, _kabc_fit
 
-# kabc-0.5x and unif-kkm-1x/0.5x are NOT looked up in ALGORITHMS below --
-# they're resolved specially in _process_one_rep once kabc's tau for that
-# (rep, version) is known (see module docstring's "KABC-0.5X VARIANT" and
-# "UNIF-KKM VARIANTS"). _kabc_fit/unif_kkm_fit are still imported/used
-# directly for those paths, not through this dict.
+# TAS-FW CALIBRATED CONST: read once at import time from
+# configs/calibration_tas_fw.yaml (written by `python -m
+# scripts.calibrate_tas_fw`), NOT configs/calibration.yaml -- tas-fw's
+# calibration protocol is structurally different (offline, synthetic
+# DiscretePMFPairEnv instances, no live budget_cap-dependent search against
+# this experiment's own data) and has always lived in its own file -- see
+# that config's header comment and scripts/calibrate_tas_fw.py's module
+# docstring. Fails loudly if calibration hasn't been run yet, same
+# "fail loudly, point to the generating command" convention as every other
+# missing-results case in this repo.
+TAS_FW_CALIBRATION_PATH = Path("configs/calibration_tas_fw.yaml")
+
+
+def _load_tas_fw_const() -> float:
+    if not TAS_FW_CALIBRATION_PATH.exists():
+        raise FileNotFoundError(
+            f"{TAS_FW_CALIBRATION_PATH} not found. Run `python -m scripts.calibrate_tas_fw` first "
+            "to freeze a calibrated const -- this script only consumes it, it never recomputes it."
+        )
+    with open(TAS_FW_CALIBRATION_PATH) as f:
+        return float(yaml.safe_load(f)["const"])
+
+
+_TAS_FW_CONST = _load_tas_fw_const()
+
+
+def _tas_fw_fit(env, delta, budget_cap, rng):
+    return _tas_fw_fit_internal(env, delta, budget_cap, rng, const=_TAS_FW_CONST)
+
+
+# unif-kkm is NOT looked up in ALGORITHMS below -- it's resolved specially
+# in _process_one_rep once kabc's tau for that (rep, version) is known (see
+# module docstring's "UNIF-KKM VARIANT"). unif_kkm_fit is still
+# imported/used directly for that path, not through this dict.
 ALGORITHMS = {
     "kabc": _kabc_fit,
     "acb": _acb_fit,
-    "tas-fw": tas_fw_fit,
+    "tas-fw": _tas_fw_fit,
 }
-KABC_TAU_MULTIPLE_VARIANTS = {"kabc-0.5x": 0.5}
-UNIF_KKM_TAU_MULTIPLE_VARIANTS = {"unif-kkm-1x": 1.0, "unif-kkm-0.5x": 0.5}
-TAU_KABC_DEPENDENT_VARIANTS = set(KABC_TAU_MULTIPLE_VARIANTS) | set(UNIF_KKM_TAU_MULTIPLE_VARIANTS)
+UNIF_KKM_TAU_MULTIPLE_VARIANTS = {"unif-kkm": 1.0}
+TAU_KABC_DEPENDENT_VARIANTS = set(UNIF_KKM_TAU_MULTIPLE_VARIANTS)
 
 
 def _load_movie_pool(data_dir: Path):
@@ -220,9 +262,6 @@ def _fit_one_algorithm(algo_id: str, env, delta: float, budget_cap: int, rng: np
         if tau_kabc is None:
             raise RuntimeError(f"{algo_id} requires kabc's tau to already be known for this (rep, version) -- "
                                 f"check that 'kabc' precedes it in configs/exp3.yaml's algorithms list")
-        if algo_id in KABC_TAU_MULTIPLE_VARIANTS:
-            this_budget = int(min(KABC_TAU_MULTIPLE_VARIANTS[algo_id] * tau_kabc, budget_cap))
-            return _kabc_fit(env, delta, this_budget, rng), this_budget
         this_budget = int(min(UNIF_KKM_TAU_MULTIPLE_VARIANTS[algo_id] * tau_kabc, budget_cap))
         return unif_kkm_fit(env, delta, this_budget, rng), this_budget
     fit_fn = ALGORITHMS[algo_id]
@@ -322,9 +361,9 @@ def main() -> None:
     algo_ids = config["algorithms"]
     versions = config["versions"]
 
-    # kabc must resolve before any tau_kabc-dependent variant (kabc-0.5x,
-    # unif-kkm-1x/0.5x -- see module docstring) -- enforced here regardless
-    # of the config file's own algorithm ordering, rather than trusting the
+    # kabc must resolve before unif-kkm (the only tau_kabc-dependent row
+    # left -- see module docstring) -- enforced here regardless of the
+    # config file's own algorithm ordering, rather than trusting the
     # config to always list kabc first.
     if "kabc" in algo_ids and any(a in TAU_KABC_DEPENDENT_VARIANTS for a in algo_ids):
         algo_ids = ["kabc"] + [a for a in algo_ids if a != "kabc"]

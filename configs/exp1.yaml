@@ -1,40 +1,23 @@
 # Experiment 1 -- Gaussian mixtures: competitiveness in the parametric regime.
-# See docs/experiments.md, "Experiment 1" section, for the full design,
-# including its REDESIGN NOTE (this config was rewritten from its original
-# form: the restricted-budget 1.0x/0.25x pass is gone, replaced by the
-# per-algorithm 0.5x-of-its-own-tau rows below -- MULTIPLIER note: this was
-# originally 0.9x, changed to 0.5x once KABC's doubling-trick quantization
-# made clear a 0.9x cut cannot actually test "10% less budget" (the final
-# doubling round alone typically costs ~half of the realized tau, so 0.9x
-# almost always lands in the same "one round short" bucket as a much larger
-# cut would); unif-kkm no longer sweeps its own independent n-grid). This
-# file encodes only the grid/protocol;
-# algorithm and environment implementations live in src/kabc/. Consumed by
-# scripts/run_experiment1.py -- a dedicated script, not run_experiment.py --
-# see that script's module docstring for why.
+# See docs/experiments.md, "Experiment 1" section, for the full design.
+# This file encodes only the grid/protocol; algorithm and environment
+# implementations live in src/kabc/. Consumed by scripts/run_experiment1.py
+# -- a dedicated script, not run_experiment.py -- see that script's module
+# docstring for why.
+#
+# Current roster: 6 independent algorithms (kabc, kabc-2x, kabc-0.5x, kabc-sg,
+# acb, acb-gaussian); kabc-0.5x/kabc-2x are a calibration-constant ablation
+# (c_cal halved/doubled), not budget variants.
 
 exp_id: 1
 delta: 0.05                    # confidence level (docs/experiments.md section 0.4)
-reps: 50                       # COMPLETE (2026-09-15): all 9 algorithms (including
-                                # acb-gaussian, merged in separately -- see the
-                                # algorithms list's own note below) now have clean
-                                # reps 0-49 in results/exp1/results.parquet, verified.
-rep_start: 50                  # READY FOR A FUTURE EXTENSION: set to the CURRENT rep
-                                # count (50) so this config is a safe no-op as-is
-                                # (range(50, reps) is empty until `reps` above is
-                                # raised). RESUME/APPEND mechanism: set `reps` above
-                                # to a larger target (e.g. 100) to append more reps to
-                                # results/exp1/results.parquet for ALL 9 algorithms
-                                # uniformly -- unlike the acb-gaussian merge, this is
-                                # exactly what rep_start's normal mechanism is for,
-                                # since the algorithm list would stay unchanged this
-                                # time. See scripts/run_experiment1.py's main() for
-                                # the exact resume mechanism (same pattern as
-                                # configs/exp3.yaml).
+reps: 100
+rep_start: 100                # results hold reps 0-99 already; no-op unless `reps` is raised
+                                # (set to 0 to regenerate from scratch)
 seed_multiplier: 1000
 seed_formula: "seed = seed_multiplier * exp_id + rep"   # docs/experiments.md section 0.4
 
-n_jobs: 10                     # parallelize ACROSS REPS (not across the 8
+n_jobs: 10                     # parallelize ACROSS REPS (not across the 6
                                 # algorithm rows within one rep) -- see
                                 # scripts/run_experiment1.py's module
                                 # docstring for the full rationale.
@@ -49,9 +32,9 @@ instances:
     # One knob swept at a time; all other params held at `base`.
     sweeps:
       - param: Delta
-        values: [1, 1.5, 2, 3, 4, 6]     # main plot
+        values: [1, 2, 3, 4]     # main plot -- trimmed from [1, 1.5, 2, 3, 4, 6] 2026-10-03
       - param: d
-        values: [6, 10, 50, 100]
+        values: [6, 10, 20, 50]  # trimmed from [6, 10, 50, 100] 2026-10-03
         # d=2 excluded: GaussianMixtureEnv's mean construction requires
         # d >= 2K = 6 for K=3 (each cluster needs its own coordinate pair).
       - param: N
@@ -61,35 +44,21 @@ instances:
         # plotting functions all sort_values("swept_value") before
         # plotting, so listing order here doesn't affect the rendered
         # x-axis order.
-    # 9 rows per (grid point, rep) -- three independent base algorithms
-    # (kabc, kabc-sg, acb), each followed by its OWN 0.5x-of-its-own-tau
-    # self-comparison row, plus unif-kkm-1x/unif-kkm-0.5x tied specifically
-    # to kabc's tau. See scripts/run_experiment1.py's DERIVED_VARIANTS for
-    # the exact mapping and docs/experiments.md's "Algorithms" note for the
-    # rationale. Order here doesn't matter -- run_experiment1.py enforces
-    # bases-before-their-dependents regardless of this list's order.
+    # 6 rows per (grid point, rep) -- all independent base algorithms
+    # (kabc, kabc-2x, kabc-0.5x, kabc-sg, acb, acb-gaussian), no
+    # cross-algorithm tau dependency (unif-kkm, the one row that used to
+    # need kabc's tau, was dropped). See docs/experiments.md section 0.1.
+    # kabc-0.5x/kabc-2x: an ablation over kabc's calibrated threshold
+    # CONSTANT (c_cal halved/doubled), not over budget -- see
+    # scripts/common.py's `_kabc_fit_2x`/`_kabc_fit_0p5x` docstrings.
     algorithms:
-      [kabc, unif-kkm-1x, kabc-0.5x, unif-kkm-0.5x, kabc-sg, kabc-sg-0.5x, acb, acb-0.5x, acb-gaussian]
+      [kabc, kabc-2x, kabc-0.5x, kabc-sg, acb, acb-gaussian]
       # No tas-fw here: its finite-alphabet assumption doesn't hold for
       # these continuous Gaussian instances -- see docs/experiments.md.
-      # acb-gaussian added 2026-09-15 (kabc.algorithms.acb_gaussian): the ACB
-      # paper's own Gaussian-specialized, non-adaptive variant (Appendix A),
-      # independent 9th base row, no -0.5x counterpart, no calibration --
-      # see that module's docstring. MERGED (2026-09-15): rep_start's normal
-      # resume/append mechanism does NOT support "add an algorithm
-      # mid-stream" (it would silently never backfill reps 0-49 for a
-      # newly-added row against an UNCHANGED algorithm list), so
-      # acb-gaussian's full 700 rows (14 grid points x 50 reps) were computed
-      # via a separate scratch-run-and-merge instead -- same reps/seeds as
-      # the other 8 algorithms' own runs (algo_idx=8, this list's own
-      # position after bases-first reordering -- see
-      # scripts/run_experiment1.py's _reorder_bases_first and
-      # docs/experiments.md's REVISION 6 for the full mechanism, including
-      # the two indexing pitfalls avoided/fixed along the way). Verified:
-      # results/exp1/results.parquet now has clean reps 0-49 for all 9
-      # algorithms uniformly (6,300 rows total) -- this config is safe to
-      # invoke as-is (a no-op with the reps/rep_start values below) or
-      # extended normally for a future rep-count increase.
+      # acb-gaussian (kabc.algorithms.acb_gaussian): the ACB paper's own
+      # Gaussian-specialized, non-adaptive variant (Appendix A), independent
+      # base row, no constant/budget variant of its own, no calibration --
+      # see that module's docstring.
     budget_cap:
       type: s_star_formula
       constant: 200
@@ -98,6 +67,6 @@ instances:
       # instance (kabc.metrics.estimate_s_star_sq), not stored here; N and
       # delta are this family's own N (per sweep point) and the top-level
       # delta above. ONE budget_cap per grid point, shared identically
-      # across all 8 algorithm rows and every rep at that point (unchanged
+      # across all 6 algorithm rows and every rep at that point (unchanged
       # from the original design) -- no budget_multiplier dimension
-      # anymore, see docs/experiments.md's REDESIGN note.
+      # anymore.

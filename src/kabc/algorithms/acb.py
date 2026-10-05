@@ -24,6 +24,20 @@ non-oracle bandwidth estimation. This pilot is unrelated to CLAUDE.md's
 median-heuristic bandwidth) -- it's a separate, analogous pilot reusing the
 same n_pilot=5 convention. Its cost counts toward tau, same principle.
 
+BEST-EFFORT OUTPUT AT THE BUDGET CAP (our addition, NOT in the paper -- the
+paper defines no output for a run that never certifies; Algorithm 2 only
+returns a clustering once ADC has run). If budget_cap is hit before ADC
+completes, every arm is assigned to the nearest of the representatives SRI had
+identified (the largest set seen in any SRI call), by Euclidean distance
+between pooled empirical means of ALL samples already pulled (pilot
+included). No extra pulls are made, so tau and `stopped` are unaffected, and
+certified runs (stopped=True) are identical to the paper's procedure. If SRI
+never found a representative (or the pilot was unaffordable) the all-zeros
+partition is returned. Note a run that found only ONE representative still
+yields a single cluster (ARI 0 for K>=2): this happens routinely on
+same-mean instances (Exp 2) and many MovieLens pairs (Exp 3), where the
+means-based search never separates a second group within the cap.
+
 The leading numerical constants c1..c6 in Eq. 9-16 are never resolved to
 explicit numbers anywhere in the paper (checked the full text, including the
 appendix's Lemma C.2/C.3 and Remark C.4 restatements: they remain symbolic,
@@ -90,6 +104,51 @@ def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
     ever looks at estimated means.
     """
     return _fit(env, delta, budget_cap, rng, c1=1.0, c2=1.0, c3=1.0, c4=1.0, c5=1.0, c6=1.0)
+
+
+class _RecordingEnv:
+    """Forwards to env while keeping per-arm running sums/counts of every pull
+    (for the best-effort partition at the cap). Never touches the rng."""
+
+    def __init__(self, env):
+        self._env = env
+        self._sum: dict[int, np.ndarray] = {}
+        self._cnt: dict[int, int] = {}
+
+    def __getattr__(self, name):
+        return getattr(self._env, name)
+
+    def pull(self, arm_index, rng):
+        x = self._env.pull(arm_index, rng)
+        v = np.atleast_1d(np.asarray(x, dtype=float))
+        if arm_index in self._sum:
+            self._sum[arm_index] = self._sum[arm_index] + v
+            self._cnt[arm_index] += 1
+        else:
+            self._sum[arm_index] = v.copy()
+            self._cnt[arm_index] = 1
+        return x
+
+    def pooled_mean(self, arm: int) -> np.ndarray | None:
+        if arm not in self._cnt:
+            return None
+        return self._sum[arm] / self._cnt[arm]
+
+
+def _best_effort_partition(env: _RecordingEnv, N: int, rep_arms: list[int]) -> np.ndarray:
+    """Nearest-representative assignment from pooled means of pulls already made."""
+    partition = np.zeros(N, dtype=int)
+    rep_means = [env.pooled_mean(b) for b in rep_arms]
+    rep_label = {b: j for j, b in enumerate(rep_arms)}
+    for a in range(N):
+        if a in rep_label:
+            partition[a] = rep_label[a]
+            continue
+        m = env.pooled_mean(a)
+        if m is None:
+            continue
+        partition[a] = int(np.argmin([float(np.sum((m - rm) ** 2)) for rm in rep_means]))
+    return partition
 
 
 def _pull_batch(env, arm: int, n: int, rng: np.random.Generator) -> np.ndarray:
@@ -214,16 +273,25 @@ def _sri(
     c3: float,
     rng: np.random.Generator,
     budget: _Budget,
+    snapshot: dict,
 ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """SRI procedure (p.7, Sequential Representative Identification): returns
     {arm: (mu_hat, mu_hat')} for up to K representatives, one per group.
+    `snapshot["reps"]` is kept at the largest representative set seen so far
+    (ties go to the most recent), so it survives a _BudgetExhausted.
     """
+
+    def record(reps):
+        if len(reps) >= len(snapshot["reps"]):
+            snapshot["reps"] = list(reps.keys())
+
     U, r, s0, n_s, n_max, T_max = _sri_schedule(delta, Delta, theta, K, d, sigma_sq, c1, c2, c3)
 
     a0 = int(rng.integers(N))
     representatives: dict[int, tuple[np.ndarray, np.ndarray]] = {
         a0: _paired_empirical_means(env, a0, n_max, rng, budget)
     }
+    record(representatives)
     sri_spent = 2 * n_max
 
     for _ in range(U):
@@ -239,6 +307,7 @@ def _sri(
                 break
         if not rejected:
             representatives[au] = _paired_empirical_means(env, au, n_max, rng, budget)
+            record(representatives)
             sri_spent += 2 * n_max
 
     return representatives
@@ -314,8 +383,10 @@ def _fit(
 
     N = env.n_arms
     K = env.K
+    renv = _RecordingEnv(env)
     budget = _Budget(cap=budget_cap)
-    partition = np.zeros(N, dtype=int)  # best-effort fallback: all arms in one cluster
+    snapshot: dict = {"reps": []}
+    partition = np.zeros(N, dtype=int)  # fallback if SRI never found a representative
     history: list[dict] = []
 
     pilot_cost = N * N_PILOT
@@ -329,7 +400,7 @@ def _fit(
         return Result(partition=partition, tau=0, stopped=False, history=[])
 
     try:
-        sigma_sq, d = _estimate_sigma_sq(env, N, rng, budget)
+        sigma_sq, d = _estimate_sigma_sq(renv, N, rng, budget)
 
         Delta0_sq = sigma_sq * (math.log(K) + math.sqrt(d) + math.log(math.log(6.0 * N / delta)))
 
@@ -346,7 +417,7 @@ def _fit(
                 )
 
                 representatives = _sri(
-                    env, N, K, d, delta_l, Delta_p, theta_pl, sigma_sq, c1, c2, c3, rng, budget
+                    renv, N, K, d, delta_l, Delta_p, theta_pl, sigma_sq, c1, c2, c3, rng, budget, snapshot
                 )
                 history.append(
                     {
@@ -360,7 +431,7 @@ def _fit(
                 )
 
                 if len(representatives) == K:
-                    refined = {a: _paired_empirical_means(env, a, n_p_prime, rng, budget) for a in representatives}
+                    refined = {a: _paired_empirical_means(renv, a, n_p_prime, rng, budget) for a in representatives}
                     Delta_hat_sq = min(
                         _dhat_sq(*refined[a], *refined[b])
                         for a in refined
@@ -373,11 +444,14 @@ def _fit(
                     Delta_hat = math.sqrt(max(Delta_hat_sq, Delta_p**2))
 
                     partition = _adc(
-                        env, N, K, d, delta / 3.0, Delta_hat / math.sqrt(2.0), representatives,
+                        renv, N, K, d, delta / 3.0, Delta_hat / math.sqrt(2.0), representatives,
                         sigma_sq, c4, c5, rng, budget,
                     )
                     return Result(partition=partition, tau=budget.tau, stopped=True, history=history)
     except _BudgetExhausted:
         pass
 
+    if snapshot["reps"]:
+        partition = _best_effort_partition(renv, N, snapshot["reps"])
+    history.append({"best_effort_fallback": True, "num_representatives": len(snapshot["reps"]), "tau": budget.tau})
     return Result(partition=partition, tau=budget.tau, stopped=False, history=history)
