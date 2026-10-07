@@ -74,7 +74,7 @@ experiments the bandwidth is computed once over the full 207-movie pool (= 1.0).
 - Per run: `tau` (budget used, pilots included), `stopped` (certified before `budget_cap`), `ari` (Adjusted Rand Index of the
   returned partition vs. truth; for non-stopped runs this is ARI at the cap), `error` (0/1 indicator), `n_iterations`,
   wall-clock time. Exp 4 adds per-pair ARI (`ari_close_pair`, `ari_far_pair`) and per-size misclassification rates.
-- Repetitions: 100 per configuration for Exp 1–3; Exp 4 is being extended from 50 to 100 (see status table below).
+- Repetitions: 100 per configuration for all four experiments (see status table below).
 - Seeds: `seed = seed_multiplier · exp_id + rep` with `seed_multiplier = 1000`. Within a rep, each algorithm gets its own
   derived seed (Exp 2: `rep_seed·100 + algorithm_index`; Exp 4: `rep_seed·1000 + 100 + setting_index·10 + algorithm_index`
   with index 0/1/2 for kabc/unif-kkm/acb), so adding or re-running one algorithm never changes another's draws.
@@ -100,7 +100,7 @@ experiments the bandwidth is computed once over the full 207-movie pool (= 1.0).
 | 1 | `results/exp1/results.parquet` | 100 | 6 | 7200 (12 grid points) |
 | 2 | `results/exp2/results.parquet` | 100 | 5 | 1500 (3 grid points) |
 | 3 | `results/exp3_3/results.parquet` | 100 | 4 | 400 |
-| 4 | `results/exp4_baseline/`, `results/exp4_amplified_imbalance/` | 50 | 3 | 150 each |
+| 4 | `results/exp4_baseline/`, `results/exp4_amplified_imbalance/` | 100 | 3 | 300 each |
 
 The `results_*_backup.parquet` files next to the results are safety copies made by the merge/rerun scripts.
 
@@ -212,20 +212,20 @@ per worker at the k = 8 scale). That raises the convergence ceiling to doubling 
 **Config / script.** `configs/exp4.yaml`, `scripts/run_experiment4.py` (kabc, unif-kkm), `scripts/run_experiment4_acb.py`
 (acb; `make exp4-acb`). Figures: notebook 03 (`exp3_exp4_combined_row`).
 
-**Status.** The headline below is for the first 50 reps per setting (a ≈ 18.7 h run for kabc/unif-kkm; the ACB pass takes
-≈ 5 min). The run is being extended to 100 reps by appending reps 50–99 (`reps: 100`, `rep_start` raised in
-`configs/exp4.yaml`; existing rows are kept). Numbers and figures will be refreshed once all 100 reps are in; the KABC
-rounds at k = 8 dominate the cost.
+**Status.** Complete: 100 reps per setting. Reps 0–49 were run first (≈ 18.7 h for kabc/unif-kkm) and reps 50–99 were
+appended afterwards via `rep_start` in `configs/exp4.yaml` (existing rows are never overwritten); the full run is ≈ 38 h of
+laptop time. The ACB rows for reps 0–49 came from the separate ACB-only pass (≈ 5 min); reps 50–99 ran ACB in the main script.
+The KABC rounds at k = 8 dominate the cost.
 
-**Headline (50 reps).**
+**Headline (100 reps).**
 
 | Setting | Algorithm | Mean ARI | Certified | Mean τ |
 |---|---|---|---|---|
-| `baseline` | `kabc` | 0.96 | 66% | 285k |
-| `baseline` | `unif-kkm` | 0.67 | – | 285k (matched) |
-| `baseline` | `acb` | 0.27 | 0% | 400k (cap) |
-| `amplified_imbalance` | `kabc` | 0.91 | 32% | 706k |
-| `amplified_imbalance` | `unif-kkm` | 0.49 | – | 706k (matched) |
+| `baseline` | `kabc` | 0.93 | 61% | 278k |
+| `baseline` | `unif-kkm` | 0.64 | – | 278k (matched) |
+| `baseline` | `acb` | 0.26 | 0% | 400k (cap) |
+| `amplified_imbalance` | `kabc` | 0.91 | 33% | 689k |
+| `amplified_imbalance` | `unif-kkm` | 0.50 | – | 689k (matched) |
 | `amplified_imbalance` | `acb` | 0.21 | 0% | 800k (cap) |
 
 (`unif-kkm` is a fixed-budget method and does not certify.) A large share of `kabc` reps end as non-certified near-misses at the

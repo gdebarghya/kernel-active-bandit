@@ -74,7 +74,7 @@ configs/      experiment grids, seeds, calibrated constants (exp1-4.yaml, calibr
 data/         MovieLens-1M and the 207-movie pool (gitignored)
 docs/         experimental design doc (experiments.md)
 notebooks/    figure notebooks (load results only, never recompute)
-results/      parquet outputs and figures (gitignored)
+results/      parquet outputs (gitignored); results/figures/ (paper figures, PNG + PDF) is tracked
 scripts/      data download, calibration, per-experiment runners (run_experimentN.py),
               ACB-only passes (run_experiment2_acb.py, run_experiment4_acb.py)
 src/kabc/     algorithms, kernels, thresholds, environments, metrics, plotting style

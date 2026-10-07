@@ -1,6 +1,9 @@
 # data & results (regenerable / third-party)
 data/
-results/
+results/*
+!results/figures/
+results/figures/.DS_Store
+results/figures/.claude/
 
 # python
 __pycache__/
