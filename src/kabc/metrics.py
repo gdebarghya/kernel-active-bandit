@@ -1,5 +1,5 @@
 """Shared metrics: partition error/ARI vs ground truth, and a general-purpose
-Monte Carlo estimator of the signal-to-noise ratio s*^2 (Eq. 7,
+Monte Carlo estimator of the signal-to-noise ratio s*^2 (Eq. (5),
 arXiv:2601.07535) used to size budget_cap for synthetic experiments.
 
 Reused by scripts/common.py's `_resolve_budget_cap` (per-grid-point
@@ -38,10 +38,9 @@ def estimate_s_star_sq(
     n_pilot: int = 5,
 ) -> float:
     """Monte Carlo estimate of the instance's TRUE signal-to-noise ratio
-    s*^2 (Eq. 7): min over pairs of distinct true clusters i != j of
-        ( ||mu_i-mu_j||^2 / (V_i v V_j) ) ^ ( 2||mu_i-mu_j|| / sqrt(g_bar) ),
-    where ^ here is "and" (the min of the two terms), matching Eq. 7's
-    notation.
+    s*^2 (Eq. (5)): min over pairs of distinct true clusters i != j of
+        min( ||mu_i-mu_j||^2 / max(V_i, V_j),  2||mu_i-mu_j|| / sqrt(g_bar) ),
+    i.e. the wedge ("and") in Eq. (5) is the minimum of the two terms.
 
     Uses a large, UNBUDGETED auxiliary sample per true cluster (one
     representative arm each, since arms within a cluster share a
@@ -49,8 +48,8 @@ def estimate_s_star_sq(
     used here purely to size budget_cap for the experiment grid; never
     counted toward any algorithm's own tau. General-purpose (Monte Carlo,
     not closed-form): works for every environment family in this repo, not
-    just Gaussians -- matches docs/experiments.md's own "compute s* ...
-    numerically" phrasing (Exp 1, Fig. 1 note).
+    just Gaussians -- consistent with the budget-cap description in
+    docs/experiments.md section 0.4.
 
     Bandwidth is estimated the same way an algorithm's own pilot phase would
     (n_pilot pulls/arm, pooled, median heuristic), for consistency with what

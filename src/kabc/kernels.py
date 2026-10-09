@@ -178,7 +178,7 @@ def mmd2_and_variance(X: np.ndarray, Y: np.ndarray, bandwidth: float) -> tuple[f
 
 
 def rkhs_variance(X: np.ndarray, bandwidth: float) -> float:
-    """Empirical RKHS variance of a single arm's distribution (Thuot et al. 2026, Eq. 5).
+    """Empirical RKHS variance of a single arm's distribution (Thuot et al. 2026, Eq. (3)).
 
     V_hat_i = (trace(K) - K.sum()/n) / (n-1), where K = rbf_kernel(X, X, bandwidth).
 
@@ -201,7 +201,7 @@ def rkhs_variance(X: np.ndarray, bandwidth: float) -> float:
 
 
 def mmd2_plugin(X: np.ndarray, Y: np.ndarray, bandwidth: float) -> float:
-    """Empirical squared MMD as the plain plug-in/V-statistic (Thuot et al. 2026, Eq. 4).
+    """Empirical squared MMD as the plain plug-in/V-statistic (Thuot et al. 2026, Eq. (2)).
 
     ||mu_hat_i - mu_hat_j||^2, computed via the reproducing property from the
     full (diagonal-included) double sum over kernel evaluations. Unlike
@@ -212,7 +212,7 @@ def mmd2_plugin(X: np.ndarray, Y: np.ndarray, bandwidth: float) -> float:
 
     Generalizes the paper's equal-sample-size formula to n_x != n_y (each of
     the three terms gets its own n_x**2 / n_y**2 / n_x*n_y normalizer); reduces
-    exactly to the paper's Eq. 4 when n_x == n_y.
+    exactly to the paper's Eq. (2) when n_x == n_y.
     """
     X = _as_2d(X)
     Y = _as_2d(Y)

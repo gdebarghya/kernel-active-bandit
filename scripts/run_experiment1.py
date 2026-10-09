@@ -97,8 +97,9 @@ unif-kkm itself, are now GONE, per the REVISION above.
 BUDGET_CAP: ONE value per grid point (`s_star_formula`, `constant=200`,
 s*^2 Monte-Carlo-estimated via `kabc.metrics.estimate_s_star_sq` -- see
 `scripts.common._resolve_budget_cap`'s own docstring; NOT a literal
-closed-form s*^2, though the formula itself is the paper's exact proven
-bound, Theorem 3.1), shared identically across all 6 algorithm rows and
+closed-form s*^2; the formula is a heuristic simplification of the paper's
+Eq. (6) / Theorem 1 bound with smaller constants -- about 7-8% of that
+bound on this grid), shared identically across all 6 algorithm rows and
 every rep at that grid point. This script always calls it with
 `budget_multiplier=1.0` (no `budget_multipliers` sweep dimension anymore,
 since the restricted-budget concept it existed for is gone -- see

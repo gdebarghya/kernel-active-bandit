@@ -14,11 +14,11 @@ within a single empirical-error evaluation are parallelized
 (joblib.Parallel, n_jobs=-2, i.e. all-but-one core), each capped to a single
 BLAS thread (env vars below + threadpoolctl) to avoid the n_jobs-way
 oversubscription that otherwise contends 11 multi-threaded worker processes
-against 12 physical cores. The search also no longer re-verifies the
+against 12 hardware threads (6 physical cores). The search also no longer re-verifies the
 theoretical constant (c_cal=1.0) empirically before bisecting -- see
 `_binary_search_c_cal`'s docstring: that single check was ~79 of kabc's
 ~100-minute calibration wall-clock, spent reconfirming a constant already
-guaranteed safe by the algorithm's own proof (Eq. 6).
+guaranteed safe by the algorithm's own proof (Eq. (4)).
 
 The search interval `[LO, SEARCH_HI]` went through several stages before
 settling at its CURRENT value, `[0.1, 1.0]` (see the `LO, SEARCH_HI =`
@@ -78,10 +78,10 @@ multiplier applied uniformly to all six during the search -- a practical
 simplification of the 1-D "binary-search the smallest c_cal" protocol, not a
 claim that all six warrant identical scaling.
 
-tas-fw has no calibratable constant in the current tas_fw.py (beta(t,delta),
-Eq. 66, is fully specified with no free leading term) -- calibration is
-skipped for it; configs/calibration.yaml records null with an explanatory
-comment.
+tas-fw is NOT calibrated by this script: its constant (a multiplier on
+beta(t,delta), Yavas et al. Eq. 66) is calibrated separately by
+scripts/calibrate_tas_fw.py -> configs/calibration_tas_fw.yaml;
+configs/calibration.yaml deliberately records null for it.
 
 SMOKE_TEST=1 reduces instance/rep/iteration counts for fast dev iteration,
 per CLAUDE.md.
@@ -98,7 +98,7 @@ import time
 # this module's imports from scratch, inheriting this process's os.environ
 # at spawn time). Without this, each of joblib's n_jobs=-2 (11) worker
 # processes independently multi-threads its own Gram-matrix/pairwise-distance
-# BLAS calls, oversubscribing the 12 physical cores several times over --
+# BLAS calls, oversubscribing the 12 hardware threads (6 physical cores) several times over --
 # confirmed empirically: an 11-worker real-protocol calibration run showed
 # each worker process burning ~2.7x more CPU-seconds than wall-clock elapsed
 # (only possible via BLAS-internal threading contending for the same cores),
@@ -163,7 +163,7 @@ N_REPS_PER_INSTANCE = 2 if SMOKE_TEST else 5  # 20*5 = 100 total calibration run
 MAX_BISECT_ITERS = 5 if SMOKE_TEST else 8
 
 # THEORETICAL_CONST=1.0 is the algorithm's own proven threshold constant
-# (Eq. 6) -- never empirically re-verified (see _binary_search_c_cal's
+# (Eq. (4)) -- never empirically re-verified (see _binary_search_c_cal's
 # docstring), only used as the ultimate fallback if the capped search below
 # finds nothing safe. SEARCH_HI = 1.0 (full range), not capped below 1.0
 # the way an earlier version of this script did: that earlier 0.6 cap was
@@ -276,7 +276,7 @@ def _binary_search_c_cal(
     error), or (None, None) if nothing in that capped interval passed.
 
     Does NOT re-verify `THEORETICAL_CONST=1.0` empirically before searching:
-    it's the algorithm's own proven threshold constant (Eq. 6), already
+    it's the algorithm's own proven threshold constant (Eq. (4)), already
     guaranteed safe by construction, not something this search needs to
     rediscover -- measured cost for kabc: that single upfront check was ~79
     of ~100 minutes of the whole calibration.

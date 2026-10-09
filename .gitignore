@@ -30,8 +30,9 @@ venv/
 .claude/
 
 # personal scratch notebooks/notes, not for the repo
-notebooks/deb-summarised-results*.ipynb
-notebooks/results_summary.tex
 notebooks/results/
 docs/results_exp1_exp2_exp3.tex
 docs/results_exp1_exp2_exp3.pdf
+
+# current paper draft (under review; the arXiv version is the public reference)
+docs/kabc-paper-draft.pdf

@@ -89,7 +89,7 @@ def test_history_matches_iteration_budget_schedule():
 
     # tau accounts for the pilot phase plus every completed iteration's fresh
     # per-arm sample (no cumulative reuse across iterations, matching
-    # Theorem 3.1's budget bound tau <= sum_k N*n_k).
+    # Theorem 1's budget bound tau <= sum_k N*n_k).
     expected_tau = env.n_arms * N_PILOT + sum(env.n_arms * entry["n_k"] for entry in result.history)
     assert result.tau == expected_tau
 

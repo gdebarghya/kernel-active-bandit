@@ -1,9 +1,16 @@
 # Experimental design for KABC (kernel-based active clustering)
 
-Companion design document for the paper "Kernel-based Active Clustering of Bandit Arms"
-(Thuot, Vogt, Ghoshdastidar, Verzelen). It describes the four experiments as they are
-currently configured and run. Configs live in `configs/`, drivers in `scripts/`, algorithm
-and environment code in `src/kabc/`, and figures are produced by the notebooks in `notebooks/`.
+Companion design document for the paper "Nonparametric Kernel Clustering with Bandit Feedback"
+(Thuot, Vogt, Ghoshdastidar, Verzelen; arXiv:2601.07535).
+It describes the four experiments as they are currently configured and run. Configs live in
+`configs/`, drivers in `scripts/`, algorithm and environment code in `src/kabc/`, and figures are
+produced by the notebooks in `notebooks/`.
+
+Numbering conventions follow the revised version of the paper (to appear on arXiv): KABC is Algorithm 1, its CLUSTER subroutine is
+Algorithm 2, the threshold is Eq. (4), s\* is Eq. (5), the budget bound is Eq. (6), and the main
+result is Theorem 1. The paper presents three experiments: the paper's Experiment 3 covers both the
+two-cluster MovieLens pairs (this document's Exp 3) and the many-cluster unbalanced settings (this
+document's Exp 4).
 
 All experiments use δ = 0.05 and are laptop-scale. Every algorithm implements
 `fit(env, delta, budget_cap, rng) -> Result(partition, tau, stopped, history)`;
@@ -15,12 +22,12 @@ environments implement `pull(arm_index, rng)`.
 
 | ID | Algorithm | Source | Used in |
 |----|-----------|--------|---------|
-| `kabc` | KABC with the variance-aware threshold (Eq. 6) and doubling trick | this paper | Exp 1–4 |
+| `kabc` | KABC with the variance-aware threshold (Eq. (4)) and doubling trick | this paper | Exp 1–4 |
 | `kabc-2x`, `kabc-0.5x` | `kabc` with its calibrated constant doubled / halved (calibration ablation, not a budget variant) | this paper | Exp 1, 2 |
-| `kabc-sg` | KABC with the kernel-uniform sub-Gaussian threshold (Discussion-section ablation) | this paper | Exp 1, 2 |
-| `acb` | ACB\* (Algorithm 2 of Thuot et al., arXiv:2406.11485): adaptive, mean-based (SRI + ADC) | Thuot et al. 2024 | Exp 1–4 |
-| `acb-gaussian` | ACB Algorithm 1 (Appendix A): Gaussian-specialized, non-adaptive, reads Δ, θ, σ from the environment | Thuot et al. 2024 | Exp 1 only |
-| `tas-fw` | Track-and-Stop with Frank–Wolfe, finite alphabet (Yavaş et al., arXiv:2409.05072) | Yavaş et al. | Exp 3 only |
+| `kabc-sg` | KABC with the kernel-uniform sub-Gaussian threshold (Section 3 ablation) | this paper | Exp 1, 2 |
+| `acb` | ACB\* (Algorithm 2 of Thuot et al., arXiv:2406.11485): adaptive, mean-based (SRI + ADC) | Thuot et al. 2025 | Exp 1–4 |
+| `acb-gaussian` | ACB Algorithm 1 (Appendix A): Gaussian-specialized, non-adaptive, reads Δ, θ, σ from the environment | Thuot et al. 2025 | Exp 1 only |
+| `tas-fw` | Track-and-Stop with Frank–Wolfe, finite alphabet (Yavaş et al., arXiv:2409.05072) | Yavaş et al. 2025 | Exp 3 only |
 | `unif-kkm` | Uniform sampling plus kernel k-means, at a budget matched to KABC's realized τ | folklore baseline | Exp 3, 4 |
 
 Notes.
@@ -125,7 +132,7 @@ accuracy, and the calibrated constant is not what makes the comparison work (cal
 **Algorithms.** `kabc`, `kabc-2x`, `kabc-0.5x`, `kabc-sg`, `acb`, `acb-gaussian`.
 
 **Config / script.** `configs/exp1.yaml`, `scripts/run_experiment1.py`, `make exp1`. Figures: notebook 01
-(`exp1_main`, `exp1_ablation`).
+(`exp-gmm-main`, `exp-gmm-ablation`).
 
 **Headline (100 reps, averaged over all grid points).** Every algorithm except `kabc-sg` has mean ARI ≥ 0.99 and certifies in
 essentially all runs. Mean τ is ≈ 1.1k for `acb-gaussian` (privileged information), ≈ 7.2k for `acb`, ≈ 9.3k for `kabc`,
@@ -172,7 +179,7 @@ behavior on hard draws is not artificially truncated. The earlier 15000-cap resu
 `results/exp3_3/results_cap15000_backup.parquet` for reference only.
 
 **Config / script.** `configs/exp3.yaml`, `scripts/run_experiment3.py`, `make exp3`. Figures: notebook 03
-(`exp3_exp4_combined_row`).
+(`exp-movielens`).
 
 **Headline (100 reps).** Mean ARI 0.93 for `kabc` (certifies in 93%), 0.98 for `tas-fw` (certifies in 88%), 0.86 for
 `unif-kkm` at matched budget, and 0.15 for `acb` (certifies in 27%). `kabc` and `unif-kkm` use ≈ 9.1k pulls on average;
@@ -202,7 +209,7 @@ a runaway Gram-matrix computation (see "Known limitation").
 **Memory guard.** `kabc.fit` refuses doubling-trick rounds whose per-worker Gram matrices would not fit in memory. This
 experiment runs 5 workers with safety factor 2 (`configs/exp4.yaml: memory_guard`), verified by measurement (≈ 628 MB peak
 per worker at the k = 8 scale). That raises the convergence ceiling to doubling round k = 8; round 9 would need ≈ 14.5 GiB at
-5 workers and was not pursued. Experiments 1–3 use the default (11 workers, factor 4).
+5 workers and was not pursued. Experiments 1–3 run 10 workers but keep the default guard assumption (11 workers, factor 4).
 
 **Algorithms.** `kabc`, `unif-kkm` (budget = min(τ_kabc, cap)), `acb`. `tas-fw` is infeasible at this size.
 
@@ -210,7 +217,7 @@ per worker at the k = 8 scale). That raises the convergence ceiling to doubling 
 (Hungarian alignment of recovered to true clusters).
 
 **Config / script.** `configs/exp4.yaml`, `scripts/run_experiment4.py` (kabc, unif-kkm), `scripts/run_experiment4_acb.py`
-(acb; `make exp4-acb`). Figures: notebook 03 (`exp3_exp4_combined_row`).
+(acb; `make exp4-acb`). Figures: notebook 03 (`exp-movielens`).
 
 **Status.** Complete: 100 reps per setting. Reps 0–49 were run first (≈ 18.7 h for kabc/unif-kkm) and reps 50–99 were
 appended afterwards via `rep_start` in `configs/exp4.yaml` (existing rows are never overwritten); the full run is ≈ 38 h of

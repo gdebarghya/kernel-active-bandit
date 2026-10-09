@@ -9,7 +9,7 @@ from kabc.thresholds import oracle_budget
 
 
 def _true_s_star_sq(env, rng, n_oracle_sample=3000):
-    """Estimate the instance's TRUE s_star_sq (Eq. 7) via a large auxiliary
+    """Estimate the instance's TRUE s_star_sq (Eq. (5)) via a large auxiliary
     per-cluster sample -- NOT counted toward any tau, and not part of the
     library's public interface (fit_oracle intentionally does not compute
     this itself; see kabc.py's fit_oracle docstring). This mirrors what an

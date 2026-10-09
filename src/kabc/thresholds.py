@@ -26,7 +26,7 @@ def _log_term(N: int, delta: float) -> float:
 
 
 # --------------------------------------------------------------------------
-# stopping thresholds (Eq 6, Discussion)
+# stopping thresholds (Eq. (4), Section 3)
 # --------------------------------------------------------------------------
 
 def variance_aware_threshold(
@@ -38,7 +38,7 @@ def variance_aware_threshold(
     g_tilde: float = 1.0,
     const: float = 1.0,
 ) -> float:
-    """Variance-aware, Wolfer-Alquier-style threshold B^{i,j}(n, delta') (Eq. 6).
+    """Variance-aware, Wolfer-Alquier-style threshold B^{i,j}(n, delta') (Eq. (4)).
 
     var_i, var_j are per-arm empirical RKHS variances (kernels.rkhs_variance).
     g_tilde is the kernel's range (sup - inf); 1.0 for the RBF kernel used
@@ -74,7 +74,7 @@ def subgaussian_threshold(
     g_bar: float = 1.0,
     const: float = 1.0,
 ) -> float:
-    """Kernel-uniform sub-Gaussian, Tolstikhin-style threshold (Discussion section).
+    """Kernel-uniform sub-Gaussian, Tolstikhin-style threshold (Section 3).
 
     The ablation alternative to variance_aware_threshold: does not adapt to
     the per-arm RKHS variance, only to the kernel's bound g_bar (sup g(x,y);
@@ -96,11 +96,11 @@ def subgaussian_threshold(
 
 
 # --------------------------------------------------------------------------
-# doubling-trick schedule (Algorithm 2)
+# doubling-trick schedule (Algorithm 1)
 # --------------------------------------------------------------------------
 
 def iteration_confidence(k: int, delta: float) -> float:
-    """Per-iteration confidence delta_k = delta / (4*k**2) (Algorithm 2)."""
+    """Per-iteration confidence delta_k = delta / (4*k**2) (Algorithm 1)."""
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k!r}")
     if not (0.0 < delta <= 1.0):
@@ -109,7 +109,7 @@ def iteration_confidence(k: int, delta: float) -> float:
 
 
 def iteration_budget(k: int, N: int, delta_k: float) -> int:
-    """Per-arm sampling budget n_k = ceil(2**k * log(8(N^2-N)/delta_k)) (Algorithm 2)."""
+    """Per-arm sampling budget n_k = ceil(2**k * log(8(N^2-N)/delta_k)) (Algorithm 1)."""
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k!r}")
     return math.ceil(2.0**k * _log_term(N, delta_k))

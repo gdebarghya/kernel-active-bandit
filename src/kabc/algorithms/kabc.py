@@ -1,10 +1,10 @@
-"""KABC (Algorithm 2, arXiv:2601.07535), its kabc-sg ablation, and kabc-oracle.
+"""KABC (Algorithm 1, arXiv:2601.07535), its kabc-sg ablation, and kabc-oracle.
 
-kabc/kabc-sg share the same doubling-trick CLUSTER loop (paper's Algorithm 1
-composed with Algorithm 2); they differ only in which pairwise threshold
+kabc/kabc-sg share the same doubling-trick CLUSTER loop (paper's Algorithm 1,
+KABC, calling Algorithm 2, CLUSTER); they differ only in which pairwise threshold
 decides same-cluster vs different-cluster edges: variance_aware_threshold
-(kabc, Wolfer-Alquier style, Eq. 6) or subgaussian_threshold (kabc-sg,
-Tolstikhin style, Discussion section). Since `fit`'s signature is fixed by
+(kabc, Wolfer-Alquier style, Eq. (4)) or subgaussian_threshold (kabc-sg,
+Tolstikhin style, Section 3). Since `fit`'s signature is fixed by
 CLAUDE.md's shared algorithm interface (env, delta, budget_cap, rng) -- no
 room for a threshold-choice parameter without special-casing this algorithm
 in experiment scripts -- the choice is made internally: `fit` and `fit_sg`
@@ -20,7 +20,7 @@ in a separate module. Unlike `fit`/`fit_sg`, `fit_oracle` does NOT match
 CLAUDE.md's standard 4-arg interface -- see its docstring.
 
 Per-iteration edges: {i,j} is added iff sqrt(mmd2_plugin(Xi,Xj,bandwidth))
-<= B^{i,j}(n,delta') (fail to reject same-KME), per Algorithm 1. The
+<= B^{i,j}(n,delta') (fail to reject same-KME), per Algorithm 2. The
 clustering is the connected components of that graph.
 
 n_pilot=5 pilot pulls (median-heuristic bandwidth estimation) count toward
@@ -28,7 +28,7 @@ tau, per CLAUDE.md; the bandwidth is then frozen for the rest of the run
 (docs/experiments.md section 0.3) and the pilot samples themselves are
 discarded, not reused afterward. Each CLUSTER call (whether a doubling-trick
 iteration or kabc-oracle's single shot) draws FRESH per-arm samples (matching
-Algorithm 1's SAMPLE(n) and the budget bound in Theorem 3.1's proof,
+Algorithm 2's step 1 (draw n samples per arm) and the budget bound in Theorem 1's proof,
 tau <= sum_k N*n_k -- not cumulative reuse across iterations).
 
 K (the true number of clusters) is not a `fit` parameter -- it is read from
@@ -101,14 +101,14 @@ STOP_REASON_DEGENERATE_PILOT = "degenerate_pilot"
 # of sequential calls, not a simultaneous allocation multiplier.
 MEMORY_GUARD_MATRICES_PER_CALL = 3  # Kxx, Kyy, Kxy alive together in mmd2_plugin (the binding case; rkhs_variance's 1 matrix is strictly smaller)
 MEMORY_GUARD_SAFETY_FACTOR = 4  # headroom for sklearn/BLAS transient buffers (e.g. rbf_kernel's internal squared-distance intermediates) beyond the 3 persistent arrays, and for imprecise GC timing
-MEMORY_GUARD_N_WORKERS = 11  # matches scripts/calibrate_constants.py's own joblib Parallel(n_jobs=-2) convention on a 12-core machine -- every concurrent worker could hit this same peak at once. Deliberately >= the 10 workers each dedicated experiment script (run_experiment1/2/3.py) actually uses (configs/expN.yaml's n_jobs: 10), so this stays a safe/conservative bound for either caller, not an exact match to both.
+MEMORY_GUARD_N_WORKERS = 11  # matches scripts/calibrate_constants.py's own joblib Parallel(n_jobs=-2) convention on a 6-core (12-thread) machine -- every concurrent worker could hit this same peak at once. Deliberately >= the 10 workers each dedicated experiment script (run_experiment1/2/3.py) actually uses (configs/expN.yaml's n_jobs: 10), so this stays a safe/conservative bound for either caller, not an exact match to both.
 MEMORY_GUARD_SAFE_TOTAL_BYTES = 8 * 1024**3  # 8 GiB: comfortable headroom under a 16GB target, leaving room for the OS, the Python/numpy baseline footprint, and every other array each worker holds besides the Gram matrices themselves
 
 
 def fit(env, delta: float, budget_cap: int, rng: np.random.Generator) -> Result:
-    """KABC: variance-aware threshold (Wolfer-Alquier style, Eq. 6). Main method.
+    """KABC: variance-aware threshold (Wolfer-Alquier style, Eq. (4)). Main method.
 
-    K (the number of clusters) is assumed known, per Algorithm 2's KABC(delta, K) --
+    K (the number of clusters) is assumed known, per Algorithm 1's KABC(delta, K) --
     it is read from `env.K`, not passed as an argument here (CLAUDE.md's shared
     `fit` interface has no K parameter).
     """
@@ -133,12 +133,12 @@ def fit_oracle(
 
     Unlike `fit`/`fit_sg`, this does NOT match CLAUDE.md's standard
     `fit(env, delta, budget_cap, rng)` interface: it additionally requires
-    `s_star_sq`, the instance's TRUE signal-to-noise ratio (Eq. 7), as an
+    `s_star_sq`, the instance's TRUE signal-to-noise ratio (Eq. (5)), as an
     oracle input. The paper itself frames the non-adaptive variant this way
     ("takes s* as an input parameter") -- it is not adaptive, so it cannot
     discover s* from its own budgeted samples the way kabc does, and so isn't
     a drop-in for a generic algorithm-registry sweep the way fit/fit_sg are.
-    Whoever calls this (the Exp 2 "price of adaptivity" script) must compute
+    Whoever calls this (no current experiment script does) must compute
     s_star_sq for the specific instance separately -- that computation is out
     of scope here, exactly as thresholds.py's oracle_budget docstring already
     says of s_star_sq.
@@ -146,12 +146,12 @@ def fit_oracle(
     Runs the same pilot phase as fit/fit_sg (counted in tau), then draws
     exactly n* = thresholds.oracle_budget(s_star_sq, N, delta) fresh samples
     per arm in one shot and makes a single clustering decision -- no doubling-
-    trick iterations. Always uses the variance-aware threshold (Eq. 6): the
+    trick iterations. Always uses the variance-aware threshold (Eq. (4)): the
     oracle variant in the paper's Discussion is defined against CLUSTER as
-    specified in Algorithm 1, which uses Eq. 6; there is no oracle-sg analogue
+    specified in Algorithm 2, which uses Eq. (4); there is no oracle-sg analogue
     described in docs/experiments.md.
 
-    stopped reflects num_clusters == K on this single attempt. Lemma A.1
+    stopped reflects num_clusters == K on this single attempt. Lemma 2
     guarantees CLUSTER(n*, delta) is correct with probability >= 1 - delta,
     so across many repetitions at a given delta, stopped should be False on
     roughly a delta (or smaller) fraction of runs -- e.g. at delta=0.05,
@@ -361,7 +361,7 @@ def _cluster_once(
     memory_guard_n_workers: int = MEMORY_GUARD_N_WORKERS,
     memory_guard_safety_factor: int = MEMORY_GUARD_SAFETY_FACTOR,
 ) -> tuple[np.ndarray, int]:
-    """One call of Algorithm 1's CLUSTER(n, delta'): draw n fresh samples/arm,
+    """One call of Algorithm 2's CLUSTER(n, delta'): draw n fresh samples/arm,
     build the same-cluster graph via the pairwise threshold, return
     (partition, num_clusters) as the graph's connected components.
 
@@ -417,7 +417,7 @@ def _fit(
 ) -> Result:
     """Shared doubling-trick loop behind `fit`/`fit_sg`.
 
-    K is assumed known (Algorithm 2's KABC(delta, K)) and read from `env.K`;
+    K is assumed known (Algorithm 1's KABC(delta, K)) and read from `env.K`;
     it is used only in the stopping condition `num_clusters == K` and is
     never an argument here, since `fit`'s signature is fixed by CLAUDE.md's
     shared algorithm interface.

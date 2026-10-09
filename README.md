@@ -1,8 +1,9 @@
 # kernel-active-bandit
 
-Benchmark suite for **KABC** (Kernel-based Active Clustering of Bandit Arms) —
+Benchmark suite for **KABC** (Kernel Active Bandit Clustering) —
 a nonparametric method for actively clustering bandit arms based on their full
-distributions, not just means. Companion code for our paper (arXiv 2601.07535).
+distributions, not just means. Companion code for our paper "Nonparametric Kernel
+Clustering with Bandit Feedback" (arXiv 2601.07535).
 
 Compares KABC against parametric baselines (ACB, TaS-FW) and a uniform-sampling
 baseline, on synthetic Gaussian mixtures and real MovieLens-1M rating data,
@@ -63,9 +64,9 @@ paper figures (written to `results/figures/`) — run the corresponding `make ex
 
 | Notebook | Experiments | Figures |
 |---|---|---|
-| `01_gaussian_mixtures.ipynb` | 1 | `exp1_main`, `exp1_ablation` |
-| `02_same_mean_shapes.ipynb` | 2 | `exp2_compact_row`, `exp2_ablation_row` |
-| `03_movielens_combined.ipynb` | 3 and 4 | `exp3_exp4_combined_row` |
+| `01_gaussian_mixtures.ipynb` | 1 | `exp-gmm-main`, `exp-gmm-ablation` |
+| `02_same_mean_shapes.ipynb` | 2 | `exp-nonparam-main`, `exp-nonparam-ablation` |
+| `03_movielens_combined.ipynb` | 3 and 4 | `exp-movielens` |
 
 ## Repository structure
 
