@@ -43,14 +43,10 @@ run `make data` to auto-download it.
 make data           # fetch/verify MovieLens-1M
 make movielens-207  # build data/ml-1m-207/ (the >=1000-rating movie pool experiments 3-4 sample from)
 make calibrate       # freeze practical threshold constants
-make smoke           # quick sanity run, experiments 1-2, reduced grid
-make smoke-exp3      # separate, slower sanity run for experiment 3 (includes tas-fw)
-make smoke-exp4      # separate, slower sanity run for experiment 4 (real k=8 pathway)
 make exp1            # Experiment 1: Gaussian mixtures
 make exp2            # Experiment 2: same-mean, different-shape instances
 make exp3            # Experiment 3: MovieLens random pairs
 make exp4            # Experiment 4: MovieLens prototypes, kabc vs. unif-kkm (and acb) under imbalance
-make test            # run test suite
 ```
 
 `make exp4` takes many hours (kabc's doubling rounds at k=8 dominate); the others take minutes
