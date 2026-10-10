@@ -50,8 +50,6 @@ make exp1            # Experiment 1: Gaussian mixtures
 make exp2            # Experiment 2: same-mean, different-shape instances
 make exp3            # Experiment 3: MovieLens random pairs
 make exp4            # Experiment 4: MovieLens prototypes, kabc vs. unif-kkm (and acb) under imbalance
-make exp2-acb        # ACB-only rerun on Experiment 2's existing instances (replaces the acb rows)
-make exp4-acb        # ACB-only pass on Experiment 4's existing instances (adds the acb rows)
 make test            # run test suite
 ```
 
